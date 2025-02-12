@@ -51,16 +51,19 @@ typedef struct {
     Head head;
 
     Font font;
+    Sound plant;
 } Plug;
 
 static Plug *p = NULL;
 
 static void load_resources(void) {
     p->font = LoadFontEx("./resources/fonts/iosevka-regular.ttf", FONT_SIZE, NULL, 0);
+    p->plant = LoadSound("./resources/sounds/plant-bomb.wav");
 }
 
 static void unload_resources(void) {
     UnloadFont(p->font);
+    UnloadSound(p->plant);
 }
 
 void reset_animation(void)
@@ -69,10 +72,12 @@ void reset_animation(void)
         if (i >0 && strcmp(p->tape[i-1].from, "HELLO")){
             p->tape[i].from = "HELLO";
             p->tape[i].to   = "WORLD";
+
         } else {
             p->tape[i].from = "WORLD";
             p->tape[i].to   = "HELLO";
         }
+        p->tape[i].t    = 0.0f;
     }
     p->head.t = 0.0;
     p->head.phase = HP_MOVING;
@@ -126,6 +131,7 @@ void turing_machine(float dt, float _w, float _h) {
 
     float t = 0.0f;
     #define HEAD_MOVING_DURATION 0.5f
+    #define HEAD_WRITING_DURATION 0.2f
     switch (p->head.phase) {
         case HP_MOVING: {
             p->head.t = (p->head.t*HEAD_MOVING_DURATION + dt)/HEAD_MOVING_DURATION;
@@ -139,7 +145,9 @@ void turing_machine(float dt, float _w, float _h) {
         } break;
 
         case HP_WRITING: {
-            p->tape[p->head.from].t = (p->tape[p->head.from].t*HEAD_MOVING_DURATION + dt)/HEAD_MOVING_DURATION;
+            float t1 = p->tape[p->head.from].t;
+            p->tape[p->head.from].t = (p->tape[p->head.from].t*HEAD_WRITING_DURATION + dt)/HEAD_WRITING_DURATION;
+            float t2 = p->tape[p->head.from].t;
             if (p->tape[p->head.from].t >= 1.0) {
                 if (p->head.from + 1 >= TAPE_COUNT) {
                     p->head.phase = HP_HALT;
@@ -148,6 +156,10 @@ void turing_machine(float dt, float _w, float _h) {
                     p->head.t = 0.0f;
                     p->head.phase = HP_MOVING;
                 }
+            }
+
+            if (t1 < 0.5 && t2 >= 0.5) {
+                PlaySound(p->plant);
             }
 
             t = (float)p->head.from;
@@ -231,6 +243,9 @@ void plug_update(void) {
             if (IsKeyPressed(KEY_R)) {
                 SetTraceLogLevel(LOG_WARNING);
                 p->ffmpeg = ffmpeg_start_rendering(RENDER_WIDTH, RENDER_HEIGHT, RENDER_FPS);
+                reset_animation();
+            }
+            if (IsKeyPressed(KEY_SPACE)) {
                 reset_animation();
             }
             turing_machine(GetFrameTime(), GetScreenWidth(), GetScreenHeight());

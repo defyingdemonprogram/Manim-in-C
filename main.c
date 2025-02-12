@@ -51,6 +51,7 @@ int main() {
 
   float scale_factor = 100.0f;
 	InitWindow(16*scale_factor, 9*scale_factor, "Panim");
+  InitAudioDevice();
   SetTargetFPS(60);
   plug_init();
 
