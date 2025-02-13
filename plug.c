@@ -42,11 +42,30 @@ typedef struct {
 } Head;
 
 typedef struct {
+    size_t move_to;
+    const char *write_to;
+} Instruction;
+
+static Instruction instructions[] = {
+    {.move_to = 0, .write_to = "Manim"},
+    {.move_to = 1, .write_to = "in"},
+    {.move_to = 2, .write_to = "C"},
+    {.move_to = 3, .write_to = "is"},
+    {.move_to = 4, .write_to = "Panim"},
+    {.move_to = 5, .write_to = "@real"},
+    {.move_to = 6, .write_to = ":)"},
+};
+
+#define instructions_count NOB_ARRAY_LEN(instructions)
+
+typedef struct {
     size_t size;
 
+    bool pause;
     FFMPEG *ffmpeg;
     RenderTexture2D screen;
 
+    size_t ip;
     Cell tape[TAPE_COUNT];
     Head head;
 
@@ -68,6 +87,7 @@ static void unload_resources(void) {
 
 void reset_animation(void)
 {
+    p->ip = 0;
     for (size_t i = 0; i < TAPE_COUNT; ++i) {
         if (i >0 && strcmp(p->tape[i-1].from, "HELLO")){
             p->tape[i].from = "HELLO";
@@ -81,8 +101,8 @@ void reset_animation(void)
     }
     p->head.t = 0.0;
     p->head.phase = HP_MOVING;
-    p->head.from = 7;
-    p->head.to = 8;
+    p->head.from = 0;
+    p->head.to = NOB_ARRAY_GET(instructions, p->ip).move_to;
 }
 
 void plug_init(void) {
@@ -140,6 +160,7 @@ void turing_machine(float dt, float _w, float _h) {
                 p->head.phase = HP_WRITING;
 
                 p->tape[p->head.from].t = 0;
+                p->tape[p->head.from].to = NOB_ARRAY_GET(instructions, p->ip).write_to;
             }
             t = (float)p->head.from + ((float)p->head.to - (float)p->head.from)*sinstep(p->head.t);
         } break;
@@ -148,21 +169,25 @@ void turing_machine(float dt, float _w, float _h) {
             float t1 = p->tape[p->head.from].t;
             p->tape[p->head.from].t = (p->tape[p->head.from].t*HEAD_WRITING_DURATION + dt)/HEAD_WRITING_DURATION;
             float t2 = p->tape[p->head.from].t;
-            if (p->tape[p->head.from].t >= 1.0) {
-                if (p->head.from + 1 >= TAPE_COUNT) {
-                    p->head.phase = HP_HALT;
-                } else {
-                    p->head.to = p->head.from + 1;
-                    p->head.t = 0.0f;
-                    p->head.phase = HP_MOVING;
-                }
-            }
 
             if (t1 < 0.5 && t2 >= 0.5) {
                 PlaySound(p->plant);
             }
 
             t = (float)p->head.from;
+
+            if (p->tape[p->head.from].t >= 1.0) {
+                if (p->ip + 1 >= instructions_count) {
+                    p->head.phase = HP_HALT;
+                } else if (NOB_ARRAY_GET(instructions, p->ip).move_to >= TAPE_COUNT) {
+                    p->head.phase = HP_HALT;
+                } else {
+                    p->ip += 1;
+                    p->head.to = NOB_ARRAY_GET(instructions, p->ip).move_to;
+                    p->head.t = 0.0f;
+                    p->head.phase = HP_MOVING;
+                }
+            }
         } break;
 
         case HP_HALT: {
@@ -246,9 +271,9 @@ void plug_update(void) {
                 reset_animation();
             }
             if (IsKeyPressed(KEY_SPACE)) {
-                reset_animation();
+                p->pause = !p->pause;
             }
-            turing_machine(GetFrameTime(), GetScreenWidth(), GetScreenHeight());
+            turing_machine(p->pause ? 0.0f : GetFrameTime(), GetScreenWidth(), GetScreenHeight());
         }
     EndDrawing();
 }
