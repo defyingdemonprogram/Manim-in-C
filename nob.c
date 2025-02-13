@@ -30,7 +30,7 @@ bool build_main(Nob_Cmd *cmd) {
 	cmd->count = 0;
 	cc(cmd);
 	nob_cmd_append(cmd, "-o", BUILD_DIR"main");
-	nob_cmd_append(cmd, "main.c");
+	nob_cmd_append(cmd, "panim.c");
 	libs(cmd);
 
 	return nob_cmd_run_sync(*cmd);
