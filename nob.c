@@ -1,5 +1,5 @@
 #define NOB_IMPLEMENTATION
-#include "nob.h"
+#include "./src/nob.h"
 
 #define BUILD_DIR "./build/"
 
@@ -21,7 +21,7 @@ bool build_plug(Nob_Cmd *cmd) {
 	cc(cmd);
 	nob_cmd_append(cmd, "-fPIC", "-shared");
 	nob_cmd_append(cmd, "-o", BUILD_DIR"libplug.so");
-    nob_cmd_append(cmd, "plug.c", "ffmpeg_linux.c");
+    nob_cmd_append(cmd, "./src/plug.c", "./src/ffmpeg_linux.c");
 	libs(cmd);
 	return nob_cmd_run_sync(*cmd);
 }
@@ -30,7 +30,7 @@ bool build_main(Nob_Cmd *cmd) {
 	cmd->count = 0;
 	cc(cmd);
 	nob_cmd_append(cmd, "-o", BUILD_DIR"main");
-	nob_cmd_append(cmd, "panim.c");
+	nob_cmd_append(cmd, "./src/panim.c");
 	libs(cmd);
 
 	return nob_cmd_run_sync(*cmd);
