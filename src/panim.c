@@ -5,10 +5,12 @@
 
 #include <dlfcn.h>
 
-const char *libplug_path = "libplug.so";
+#define NOB_IMPLEMENTATION
+#include "nob.h"
+
 void *libplug = NULL;
 
-bool reload_libplug() {
+bool reload_libplug(const char *libplug_path) {
   if (libplug != NULL) {
     dlclose(libplug);
   }
@@ -46,8 +48,18 @@ bool reload_libplug() {
   return true;
 }
 
-int main() {
-  if (!reload_libplug()) return 1;
+int main(int argc, char **argv) {
+  const char *program_name = nob_shift_args(&argc, &argv);
+
+  if (argc <= 0) {
+    fprintf(stderr, "Usage: %s <libplug.so>\n", program_name);
+    fprintf(stderr, "ERROR: no animation dynamic library is provided\n");
+    return 1;
+  }
+
+  const char *libplug_path = nob_shift_args(&argc, &argv);
+    
+  if (!reload_libplug(libplug_path)) return 1;
 
   float scale_factor = 100.0f;
 	InitWindow(16*scale_factor, 9*scale_factor, "Panim");
@@ -63,7 +75,7 @@ int main() {
 
     if (IsKeyPressed(KEY_H)) {
       void *state = plug_pre_reload();
-      reload_libplug();
+      reload_libplug(libplug_path);
       plug_post_reload(state);
     }
     plug_update();

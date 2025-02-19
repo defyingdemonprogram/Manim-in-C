@@ -45,8 +45,8 @@ int main(int argc, char **argv) {
 	if (!build_main(&cmd)) return 1;
 	if (!build_plug(&cmd)) return 1;
 
-	// cmd.count = 0;
-	// nob_cmd_append(&cmd, BUILD_DIR"main");
-	// if (nob_cmd_run_sync(cmd)) return 1;
+	cmd.count = 0;
+	nob_cmd_append(&cmd, BUILD_DIR"main", BUILD_DIR"libplug.so");
+	if (nob_cmd_run_sync(cmd)) return 1;
 	return 0;
 }
