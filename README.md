@@ -11,7 +11,7 @@ cc -o nob nob.c  # Run this only once
 
 1. Running the Project
 ```bash
-./build/main ./build/libplug.so
+./build/panim ./build/libplug.so
 ```
 
 #### References

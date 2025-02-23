@@ -1,85 +1,117 @@
 #include <stdio.h>
 
 #include "raylib.h"
-#include "plug.h"
 
 #include <dlfcn.h>
 
 #define NOB_IMPLEMENTATION
 #include "nob.h"
+#include "plug.h"
+#include "ffmpeg.h"
+
+#define RENDER_WIDTH 1920
+#define RENDER_HEIGHT 1080
+#define RENDER_FPS 60
+#define RENDER_DELTA_TIME (1.0f/RENDER_FPS)
 
 void *libplug = NULL;
 
 bool reload_libplug(const char *libplug_path) {
-  if (libplug != NULL) {
-    dlclose(libplug);
-  }
+    if (libplug != NULL) {
+        dlclose(libplug);
+    }
 
-  libplug = dlopen(libplug_path, RTLD_NOW);
-  if (libplug == NULL) {
-    fprintf(stderr, "ERROR: %s\n", dlerror());
-    return false;
-  }
+    libplug = dlopen(libplug_path, RTLD_NOW);
+    if (libplug == NULL) {
+        fprintf(stderr, "ERROR: %s\n", dlerror());
+        return false;
+    }
 
-  plug_init = dlsym(libplug, "plug_init");
-  if (plug_init == NULL) {
-    fprintf(stderr, "ERROR: %s\n", dlerror());
-    return false;
-  }
+    #define PLUG(name, ...) \
+        name = dlsym(libplug, #name); \
+        if (name == NULL) { \
+            fprintf(stderr, "ERROR: %s\n", dlerror()); \
+            return false; \
+        }
+    LIST_OF_PLUGS
+    #undef PLUG
 
-  plug_pre_reload = dlsym(libplug, "plug_pre_reload");
-  if (plug_pre_reload == NULL) {
-    fprintf(stderr, "ERROR: %s\n", dlerror());
-    return false;
-  }
-
-  plug_post_reload = dlsym(libplug, "plug_post_reload");
-  if (plug_post_reload == NULL) {
-    fprintf(stderr, "ERROR: %s\n", dlerror());
-    return false;
-  }
-
-  plug_update = dlsym(libplug, "plug_update");
-  if (plug_update == NULL) {
-    fprintf(stderr, "ERROR: %s\n", dlerror());
-    return false;
-  }
-
-  return true;
+    return true;
 }
 
 int main(int argc, char **argv) {
-  const char *program_name = nob_shift_args(&argc, &argv);
+    const char *program_name = nob_shift_args(&argc, &argv);
 
-  if (argc <= 0) {
-    fprintf(stderr, "Usage: %s <libplug.so>\n", program_name);
-    fprintf(stderr, "ERROR: no animation dynamic library is provided\n");
-    return 1;
-  }
-
-  const char *libplug_path = nob_shift_args(&argc, &argv);
-    
-  if (!reload_libplug(libplug_path)) return 1;
-
-  float scale_factor = 100.0f;
-	InitWindow(16*scale_factor, 9*scale_factor, "Panim");
-  InitAudioDevice();
-  SetTargetFPS(60);
-  plug_init();
-
-	while (!WindowShouldClose()) {
-    if (IsKeyPressed(KEY_Q)) {
-      printf("I have pressed Q");
-      break;;
+    if (argc <= 0) {
+        fprintf(stderr, "Usage: %s <libplug.so>\n", program_name);
+        fprintf(stderr, "ERROR: no animation dynamic library is provided\n");
+        return 1;
     }
 
-    if (IsKeyPressed(KEY_H)) {
-      void *state = plug_pre_reload();
-      reload_libplug(libplug_path);
-      plug_post_reload(state);
+    const char *libplug_path = nob_shift_args(&argc, &argv);
+        
+    if (!reload_libplug(libplug_path)) return 1;
+
+    float scale_factor = 100.0f;
+        InitWindow(16*scale_factor, 9*scale_factor, "Panim");
+    InitAudioDevice();
+    SetTargetFPS(60);
+    plug_init();
+
+    bool pause = false;
+    FFMPEG *ffmpeg = NULL;
+    RenderTexture2D screen = LoadRenderTexture(RENDER_WIDTH, RENDER_HEIGHT);
+
+    while (!WindowShouldClose()) {
+        if (IsKeyPressed(KEY_Q)) {
+            printf("I have pressed Q");
+            break;;
+        }
+        BeginDrawing();
+            if (ffmpeg) {
+                if (plug_finished()) {
+                    ffmpeg_end_rendering(ffmpeg, false);
+                    plug_reset();
+                    ffmpeg = NULL;
+                    SetTraceLogLevel(LOG_INFO);
+                } else {
+                    BeginTextureMode(screen);
+                    plug_update(RENDER_DELTA_TIME, RENDER_WIDTH, RENDER_HEIGHT);
+                    EndTextureMode();
+
+                    Image image = LoadImageFromTexture(screen.texture);
+                    if (!ffmpeg_send_frame_flipped(ffmpeg, image.data, image.width, image.height)) {
+                        // NOTE: we don't check the result of ffmpeg_end_rendering here because we
+                        // don't care at this point: writing a frame failed, so something went completely
+                        // wrong. So let's just show to the user the "FFmpeg Failure" screen. ffmpeg_end_rendering
+                        // should log any additional errors anyway.
+                        ffmpeg_end_rendering(ffmpeg, false);
+                        plug_reset();
+                        ffmpeg = NULL;
+                        SetTraceLogLevel(LOG_INFO);
+                    }
+                    UnloadImage(image);
+                }
+            } else {
+                if (IsKeyPressed(KEY_R)) {
+                    SetTraceLogLevel(LOG_WARNING);
+                    ffmpeg = ffmpeg_start_rendering(RENDER_WIDTH, RENDER_HEIGHT, RENDER_FPS);
+                    plug_reset();
+                } else {
+                    if (IsKeyPressed(KEY_H)) {
+                        void *state = plug_pre_reload();
+                        reload_libplug(libplug_path);
+                        plug_post_reload(state);
+                    }
+
+                    if (IsKeyPressed(KEY_SPACE)) {
+                        pause = !pause;
+                    }
+                    plug_update(pause ? 0.0f : GetFrameTime(), GetScreenWidth(), GetScreenHeight());
+                }
+            }
+        EndDrawing();
     }
-    plug_update();
-  }
-  CloseWindow();
-	return 0;
+    CloseWindow();
+    return 0;
 }

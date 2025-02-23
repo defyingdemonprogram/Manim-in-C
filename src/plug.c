@@ -11,6 +11,7 @@
 #define CELL_WIDTH 150.0f
 #define CELL_HEIGHT 100.0f
 #define CELL_PAD (CELL_WIDTH*0.15f)
+
 #define RENDER_WIDTH 1920
 #define RENDER_HEIGHT 1080
 #define RENDER_FPS 60
@@ -78,32 +79,22 @@ static Action script[] = {
     {.kind = ACTION_WRITE, .as = { .write = "0" }},
     {.kind = ACTION_MOVE,  .as = { .move  = DIR_RIGHT }},
     {.kind = ACTION_WRITE, .as = { .write = "1" }},
-    {.kind = ACTION_MOVE,  .as = { .move  = DIR_RIGHT }},
     {.kind = ACTION_WRITE, .as = { .write = "2" }},
-    {.kind = ACTION_MOVE,  .as = { .move  = DIR_RIGHT }},
     {.kind = ACTION_WRITE, .as = { .write = "3" }},
-    {.kind = ACTION_MOVE,  .as = { .move  = DIR_LEFT }},
+    {.kind = ACTION_MOVE,  .as = { .move  = DIR_RIGHT }},
     {.kind = ACTION_WRITE, .as = { .write = "1" }},
-    {.kind = ACTION_MOVE,  .as = { .move  = DIR_RIGHT }},
+    {.kind = ACTION_WRITE, .as = { .write = "2" }},
     {.kind = ACTION_WRITE, .as = { .write = "3" }},
     {.kind = ACTION_MOVE,  .as = { .move  = DIR_RIGHT }},
-    {.kind = ACTION_WRITE, .as = { .write = "4" }},
-    {.kind = ACTION_MOVE,  .as = { .move  = DIR_RIGHT }},
-    {.kind = ACTION_WRITE, .as = { .write = "5" }},
-    {.kind = ACTION_MOVE,  .as = { .move  = DIR_LEFT }},
-    {.kind = ACTION_WRITE, .as = { .write = "4" }},
-    {.kind = ACTION_MOVE,  .as = { .move  = DIR_RIGHT }},
-    
+    {.kind = ACTION_WRITE, .as = { .write = "1" }},
+    {.kind = ACTION_WRITE, .as = { .write = "2" }},
+    {.kind = ACTION_WRITE, .as = { .write = "3" }},
 };
 
 #define script_size NOB_ARRAY_LEN(script)
 
 typedef struct {
     size_t size;
-
-    bool pause;
-    FFMPEG *ffmpeg;
-    RenderTexture2D screen;
 
     size_t ip;
     float t;
@@ -126,8 +117,9 @@ static void unload_resources(void) {
     UnloadSound(p->plant);
 }
 
-void reset_animation(void)
+void plug_reset(void)
 {
+    p->head.index = 0;
     p->ip = 0;
     p->t = 0.0;
     for (size_t i = 0; i < TAPE_COUNT; ++i) {
@@ -140,8 +132,7 @@ void plug_init(void) {
     assert(p != NULL);
     memset(p, 0, sizeof(*p));
     p->size = sizeof(*p);
-    p->screen = LoadRenderTexture(RENDER_WIDTH, RENDER_HEIGHT);
-    reset_animation();
+    plug_reset();
     load_resources();
 
     TraceLog(LOG_INFO, "---------------------");
@@ -192,7 +183,7 @@ void text_in_cell(Rectangle rec, const char *from_text, const char *to_text, flo
     }
 }
 
-void turing_machine(float dt, float w, float h) {
+void plug_update(float dt, float w, float h) {
     ClearBackground(BACKGROUND_COLOR);
 
     float t = 0.0f;
@@ -233,6 +224,8 @@ void turing_machine(float dt, float w, float h) {
                 t = (float)p->head.index;
             } break;
         }
+    } else {
+        t = (float)p->head.index;
     }
 
     for (size_t i = 0; i < TAPE_COUNT; ++i) {
@@ -243,7 +236,7 @@ void turing_machine(float dt, float w, float h) {
             .height = CELL_HEIGHT,
         };
         DrawRectangleRec(rec, CELL_COLOR);
-        
+
         if (
             (size_t)p->head.index == i &&      // we are rendering the head
             p->ip < script_size &&             // there is a currently executing instruction
@@ -266,42 +259,6 @@ void turing_machine(float dt, float w, float h) {
     DrawRectangleLinesEx(rec, head_thick, HEAD_COLOR);
 }
 
-void plug_update(void) {
-    BeginDrawing();
-        if (p->ffmpeg) {
-            if (p->ip >= script_size) {
-                ffmpeg_end_rendering(p->ffmpeg, false);
-                reset_animation();
-                p->ffmpeg = NULL;
-                SetTraceLogLevel(LOG_INFO);
-            } else {
-                BeginTextureMode(p->screen);
-                turing_machine(RENDER_DELTA_TIME, RENDER_WIDTH, RENDER_HEIGHT);
-                EndTextureMode();
-
-                Image image = LoadImageFromTexture(p->screen.texture);
-                if (!ffmpeg_send_frame_flipped(p->ffmpeg, image.data, image.width, image.height)) {
-                    // NOTE: we don't check the result of ffmpeg_end_rendering here because we
-                    // don't care at this point: writing a frame failed, so something went completely
-                    // wrong. So let's just show to the user the "FFmpeg Failure" screen. ffmpeg_end_rendering
-                    // should log any additional errors anyway.
-                    ffmpeg_end_rendering(p->ffmpeg, false);
-                    reset_animation();
-                    p->ffmpeg = NULL;
-                    SetTraceLogLevel(LOG_INFO);
-                }
-                UnloadImage(image);
-            }
-        } else {
-            if (IsKeyPressed(KEY_R)) {
-                SetTraceLogLevel(LOG_WARNING);
-                p->ffmpeg = ffmpeg_start_rendering(RENDER_WIDTH, RENDER_HEIGHT, RENDER_FPS);
-                reset_animation();
-            }
-            if (IsKeyPressed(KEY_SPACE)) {
-                p->pause = !p->pause;
-            }
-            turing_machine(p->pause ? 0.0f : GetFrameTime(), GetScreenWidth(), GetScreenHeight());
-        }
-    EndDrawing();
+bool plug_finished(void) {
+    return p->ip >= script_size;
 }
