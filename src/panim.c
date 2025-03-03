@@ -82,7 +82,7 @@ int main(int argc, char **argv) {
                     finish_ffmpeg_rendering();
                 } else {
                     BeginTextureMode(screen);
-                    plug_update(RENDER_DELTA_TIME, RENDER_WIDTH, RENDER_HEIGHT);
+                    plug_update(RENDER_DELTA_TIME, RENDER_WIDTH, RENDER_HEIGHT, true);
                     EndTextureMode();
 
                     Image image = LoadImageFromTexture(screen.texture);
@@ -110,7 +110,7 @@ int main(int argc, char **argv) {
                     if (IsKeyPressed(KEY_Q)) {
                         plug_reset();
                     }
-                    plug_update(paused ? 0.0f : GetFrameTime(), GetScreenWidth(), GetScreenHeight());
+                    plug_update(paused ? 0.0f : GetFrameTime(), GetScreenWidth(), GetScreenHeight(), false);
                 }
             }
         EndDrawing();
