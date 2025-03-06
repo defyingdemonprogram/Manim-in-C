@@ -9,14 +9,14 @@
 #include "arena.h"
 #include "env.h"
 
-#if 1
+#if 0
     #define CELL_COLOR ColorFromHSV(0, 0.0, 0.15)
     #define HEAD_COLOR ColorFromHSV(200, 0.8, 0.8)
-    #define BACKGROUND_COLOR ColorFromHSV(120, 0.0, 0.95)
+    #define BACKGROUND_COLOR ColorFromHSV(120, 0.0, 0.88)
 #else
     #define CELL_COLOR ColorFromHSV(0, 0.0, 1 - 0.15)
     #define HEAD_COLOR ColorFromHSV(200, 0.8, 0.8)
-    #define BACKGROUND_COLOR ColorFromHSV(120, 0.0, 1 - 0.95)
+    #define BACKGROUND_COLOR ColorFromHSV(120, 0.0, 1 - 0.88)
 #endif
 
 #define FONT_SIZE 52
@@ -110,7 +110,8 @@ typedef struct {
 
     // State (survives the plugin reload, reset on plug_reset)
     size_t ip;
-    float t;
+    float action_t;
+    float action_init;
     Arena tape_strings;
     Head head;
     Tape tape;
@@ -121,8 +122,8 @@ typedef struct {
     Script script;
     Table table;
     Font font;
-    Sound plant_sound;
-    Wave plant_wave;
+    Sound write_sound;
+    Wave write_wave;
 } Plug;
 
 static Plug *p = NULL;
@@ -160,8 +161,8 @@ static void table(const char *state, const char *read, const char *write, Direct
 
 static void load_assets(void) {
     p->font = LoadFontEx("./assets/fonts/iosevka-regular.ttf", FONT_SIZE, NULL, 0);
-    p->plant_wave = LoadWave("./assets/sounds/plant-bomb.wav");
-    p->plant_sound = LoadSoundFromWave(p->plant_wave);
+    p->write_wave = LoadWave("./assets/sounds/plant-bomb.wav");
+    p->write_sound = LoadSoundFromWave(p->write_wave);
 
     // Table
     {
@@ -213,8 +214,8 @@ static void load_assets(void) {
 
 static void unload_assets(void) {
     UnloadFont(p->font);
-    UnloadSound(p->plant_sound);
-    UnloadWave(p->plant_wave);
+    UnloadSound(p->write_sound);
+    UnloadWave(p->write_wave);
     p->script.count = 0;
     p->table.count = 0;
 }
@@ -222,7 +223,7 @@ static void unload_assets(void) {
 void plug_reset(void)
 {
     p->ip = 0;
-    p->t = 0.0f;
+    p->action_t = 0.0f;
     arena_reset(&p->tape_strings);
     p->head.index = 0;
     p->head.state = arena_strdup(&p->tape_strings, "");
@@ -346,6 +347,12 @@ static void render_head(float w, float h, float state_t) {
     }
 }
 
+static void next_action(void) {
+    p->action_t = 0.0f;
+    p->action_init = false;
+    p->ip += 1;
+}
+
 void plug_update(Env env) {
 
     float dt = env.delta_time;
@@ -358,7 +365,8 @@ void plug_update(Env env) {
         Action action = p->script.items[p->ip];
         switch (action.kind) {
             case ACTION_WRITE_ALL: {
-                if (p->t == 0.0f) {
+                if (!p->action_init) {
+                    p->action_init = true;
                     char *symbol_b = arena_strdup(&p->tape_strings, action.as.write_all);
                     for (size_t i = 0; i < p->tape.count; ++i) {
                         p->tape.items[i].symbol_b = symbol_b;
@@ -366,97 +374,119 @@ void plug_update(Env env) {
                     }
                 }
 
-                float t1 = p->t;
-                p->t = (p->t*HEAD_WRITING_DURATION + dt)/HEAD_WRITING_DURATION;
-                float t2 = p->t;
+                float t1 = p->action_t;
+                p->action_t = (p->action_t*HEAD_WRITING_DURATION + dt)/HEAD_WRITING_DURATION;
+                float t2 = p->action_t;
 
                 if (t1 < 0.5 && t2 >= 0.5) {
-                    env.play_sound(p->plant_sound, p->plant_wave);
+                    env.play_sound(p->write_sound, p->write_wave);
                 }
 
                 for (size_t i = 0; i < p->tape.count; ++i) {
-                    p->tape.items[i].t = sinstep(p->t);
+                    p->tape.items[i].t = sinstep(p->action_t);
                 }
 
                 render_tape(w, h, (float)p->head.index);
                 render_head(w, h, 0.0f);
 
-                if (p->t >= 1.0f) {
+                if (p->action_t >= 1.0f) {
                     for (size_t i = 0; i < p->tape.count; ++i) {
                         p->tape.items[i].symbol_a = p->tape.items[i].symbol_b;
                         p->tape.items[i].t = 0.0f;
                     }
 
-                    p->t = 0.0f;
-                    p->ip += 1;
+                    next_action();
                 }
             } break;
 
             case ACTION_WAIT: {
-                p->t = (p->t*action.as.wait + dt)/action.as.wait;
+                if (!p->action_init) {
+                    p->action_init = true;
+                    // nothing to setup
+                }
+
+                p->action_t = (p->action_t*action.as.wait + dt)/action.as.wait;
                 render_tape(w, h, (float)p->head.index);
                 render_head(w, h, 0.0);
 
-                if (p->t >= 1.0f) {
-                    p->ip += 1;
-                    p->t = 0;
+                if (p->action_t >= 1.0f) {
+                    // nothing to teardown
+                    next_action();
                 }
             } break;
 
             case ACTION_INTRO: {
-                p->t = (p->t*INTRO_DURATION + dt)/INTRO_DURATION;
-                p->scene_t = sinstep(p->t);
+                if (!p->action_init) {
+                    p->action_init = true;
+                    // nothing to setup
+                }
+
+                p->action_t = (p->action_t*INTRO_DURATION + dt)/INTRO_DURATION;
+                p->scene_t = sinstep(p->action_t);
                 render_tape(w, h, (float)action.as.intro);
                 render_head(w, h, 0.0f);
 
-                if (p->t >= 1.0) {
+                if (p->action_t >= 1.0) {
                     p->head.index = action.as.intro;
-                    p->ip += 1;
-                    p->t = 0;
                     p->scene_t = 1;
+                    next_action();
                 }
             } break;
 
             case ACTION_OUTRO: {
-                p->t = (p->t*INTRO_DURATION + dt)/INTRO_DURATION;
-                p->scene_t = sinstep(1.0f - p->t);
+                if (!p->action_init) {
+                    p->action_init = true;
+                    // nothing to setup
+                }
+
+                p->action_t = (p->action_t*INTRO_DURATION + dt)/INTRO_DURATION;
+                p->scene_t = sinstep(1.0f - p->action_t);
                 render_tape(w, h, (float)p->head.index);
                 render_head(w, h, 0.0f);
 
-                if (p->t >= 1.0) {
-                    p->ip += 1;
-                    p->t = 0;
+                if (p->action_t >= 1.0) {
                     p->scene_t = 0;
+
+                    next_action();
                 }
             } break;
 
             case ACTION_MOVE: {
-                p->t = (p->t*HEAD_MOVING_DURATION + dt)/HEAD_MOVING_DURATION;
+                if (!p->action_init) {
+                    p->action_init = true;
+                    // nothing to setup
+                }
+
+                p->action_t = (p->action_t*HEAD_MOVING_DURATION + dt)/HEAD_MOVING_DURATION;
 
                 float from = (float)p->head.index;
                 float to = (float)(p->head.index + action.as.move);
-                float t = Lerp(from, to, sinstep(p->t));
+                float t = Lerp(from, to, sinstep(p->action_t));
                 render_tape(w, h, t);
                 render_head(w, h, 0.0f);
 
-                if (p->t >= 1.0) {
+                if (p->action_t >= 1.0) {
                     p->head.index += action.as.move;
-                    p->ip += 1;
-                    p->t = 0;
+
+                    next_action();
                 }
             } break;
 
             case ACTION_SWITCH: {
-                p->t = (p->t*HEAD_WRITING_DURATION + dt)/HEAD_WRITING_DURATION;
+                if (!p->action_init) {
+                    p->action_init = true;
+                    // nothing to setup
+                }
+
+                p->action_t = (p->action_t*HEAD_WRITING_DURATION + dt)/HEAD_WRITING_DURATION;
 
                 render_tape(w, h, (float)p->head.index);
-                render_head(w, h, sinstep(p->t));
+                render_head(w, h, sinstep(p->action_t));
 
-                if (p->t >= 1.0) {
+                if (p->action_t >= 1.0) {
                     p->head.state = arena_strdup(&p->tape_strings, action.as.sweetch);
 
-                    p->ip += 1;
-                    p->t = 0;
+                    next_action();
                 }
             } break;
 
@@ -466,33 +496,33 @@ void plug_update(Env env) {
                     cell = &p->tape.items[(size_t)p->head.index];
                 }
 
-                if (p->t == 0.0) {
+                if (!p->action_init) {
+                    p->action_init = true;
                     if (cell) {
                         cell->symbol_b = arena_strdup(&p->tape_strings, action.as.write);
                     }
                 }
 
-                float t1 = p->t;
-                p->t = (p->t*HEAD_WRITING_DURATION + dt)/HEAD_WRITING_DURATION;
-                float t2 = p->t;
+                float t1 = p->action_t;
+                p->action_t = (p->action_t*HEAD_WRITING_DURATION + dt)/HEAD_WRITING_DURATION;
+                float t2 = p->action_t;
 
                 if (t1 < 0.5 && t2 >= 0.5) {
-                    env.play_sound(p->plant_sound, p->plant_wave);
+                    env.play_sound(p->write_sound, p->write_wave);
                 }
 
-                cell->t = sinstep(p->t);
+                cell->t = sinstep(p->action_t);
 
                 render_tape(w, h, (float)p->head.index);
                 render_head(w, h, 0.0f);
 
-                if (p->t >= 1.0) {
+                if (p->action_t >= 1.0) {
                     if (cell) {
                         cell->symbol_a = cell->symbol_b;
                         cell->t = 0.0;
                     }
 
-                    p->ip += 1;
-                    p->t = 0;
+                    next_action();
                 }
             } break;
         }
