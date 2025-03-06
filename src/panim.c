@@ -256,7 +256,7 @@ int main(int argc, char **argv) {
                         paused = !paused;
                     }
 
-                    if (IsKeyPressed(KEY_Q)) {
+                    if (IsKeyPressed(KEY_A)) {
                         plug_reset();
                     }
                     plug_update(CLITERAL(Env) {
