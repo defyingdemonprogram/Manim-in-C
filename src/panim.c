@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <math.h>
 
 #include "raylib.h"
 
@@ -10,21 +11,28 @@
 #include "plug.h"
 #include "ffmpeg.h"
 
-#define RENDER_WIDTH 1920
-#define RENDER_HEIGHT 1080
-#define RENDER_FPS 60
-#define RENDER_DELTA_TIME (1.0f/RENDER_FPS)
-#define RENDER_SPF (44100/RENDER_FPS)
+#define FFMPEG_VIDEO_WIDTH 1920
+#define FFMPEG_VIDEO_HEIGHT 1080
+#define FFMPEG_VIDEO_FPS 60
+#define FFMPEG_VIDEO_DELTA_TIME (1.0f/FFMPEG_VIDEO_FPS)
+#define FFMPEG_SOUND_SAMPLE_RATE 44100
+#define FFMPEG_SOUND_CHANNELS 2
+#define FFMPEG_SOUND_SAMPLE_SIZE_BITS 16
+#define FFMPEG_SOUND_SAMPLE_SIZE_BYTES (FFMPEG_SOUND_SAMPLE_SIZE_BITS/8)
+// SPF - Samples Per Frame
+#define FFMPEG_SOUND_SPF (FFMPEG_SOUND_SAMPLE_RATE/FFMPEG_VIDEO_FPS)
+#define RENDERING_FONT_SIZE 78
 
 // The state of Panim Engine
 static bool paused = false;
 static FFMPEG *ffmpeg_video = NULL;
 static FFMPEG *ffmpeg_audio = NULL;
 static RenderTexture2D screen = {0};
+static Font rendering_font = {0};
 static void *libplug = NULL;
 static Wave ffmpeg_wave = {0};
 static size_t ffmpeg_wave_cursor = 0;
-static uint8_t silence[RENDER_SPF*4] = {0};
+static uint8_t silence[FFMPEG_SOUND_SPF*FFMPEG_SOUND_SAMPLE_SIZE_BYTES*FFMPEG_SOUND_CHANNELS] = {0};
 
 static bool reload_libplug(const char *libplug_path) {
     if (libplug != NULL) {
@@ -70,6 +78,19 @@ void dummy_play_sound(Sound _sound, Wave _wave) {
 
 void ffmpeg_play_sound(Sound _sound, Wave wave) {
     (void)_sound;
+
+    if (
+        wave.sampleRate != FFMPEG_SOUND_SAMPLE_RATE      ||
+        wave.sampleSize != FFMPEG_SOUND_SAMPLE_SIZE_BITS ||
+        wave.channels   != FFMPEG_SOUND_CHANNELS
+    ) {
+        TraceLog(LOG_ERROR,
+                 "Animation tried to play sound with rate: %dhz, sample size: %d bits, channels: %d. "
+                 "But we only support rate: %dhz, sample size: %d bits, channels: %d for now",
+                 wave.sampleRate, wave.sampleSize, wave.channels);
+        return;
+    }
+
     ffmpeg_wave = wave;
     ffmpeg_wave_cursor = 0;
 }
@@ -77,6 +98,48 @@ void ffmpeg_play_sound(Sound _sound, Wave wave) {
 void preview_play_sound(Sound sound, Wave _wave) {
     (void)_wave;
     PlaySound(sound);
+}
+
+void rendering_scene(const char *text) {
+    Color foreground_color = ColorFromHSV(0, 0, 0.95);
+    Color background_color = ColorFromHSV(0, 0, 0.05);
+
+    ClearBackground(background_color);
+    Vector2 text_size = MeasureTextEx(rendering_font, text, RENDERING_FONT_SIZE, 0);
+    Vector2 position = {
+        GetScreenWidth()/2 - text_size.x/2,
+        GetScreenHeight()/2 - text_size.y/2,
+    };
+    DrawTextEx(rendering_font, text, position, RENDERING_FONT_SIZE, 0, foreground_color);
+
+    float circle_radius = RENDERING_FONT_SIZE*0.2f;
+    float ball_height = GetScreenHeight()*0.03;
+    float ball_padding = GetScreenHeight()*0.02;
+    float waving_speed = 2;
+
+    {
+        Vector2 center = {
+            .x = position.x + text_size.x*0.5 - circle_radius*3,
+            .y = position.y + RENDERING_FONT_SIZE + ball_padding + ball_height*(sinf(GetTime()*waving_speed - PI/4) + 1)*0.5,
+        };
+        DrawCircleV(center, circle_radius, foreground_color);
+    }
+
+    {
+        Vector2 center = {
+            .x = position.x + text_size.x*0.5,
+            .y = position.y + RENDERING_FONT_SIZE + ball_padding + ball_height*(sinf(GetTime()*waving_speed) + 1)*0.5,
+        };
+        DrawCircleV(center, circle_radius, foreground_color);
+    }
+
+    {
+        Vector2 center = {
+            .x = position.x + text_size.x*0.5 + circle_radius*3,
+            .y = position.y + RENDERING_FONT_SIZE + ball_padding + ball_height*(sinf(GetTime()*waving_speed + PI/4) + 1)*0.5,
+        };
+        DrawCircleV(center, circle_radius, foreground_color);
+    }
 }
 
 int main(int argc, char **argv) {
@@ -93,13 +156,15 @@ int main(int argc, char **argv) {
     if (!reload_libplug(libplug_path)) return 1;
 
     float scale_factor = 100.0f;
+    SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE);
     InitWindow(16*scale_factor, 9*scale_factor, "Panim");
     InitAudioDevice();
     SetTargetFPS(60);
     SetExitKey(KEY_NULL);
     plug_init();
 
-    screen = LoadRenderTexture(RENDER_WIDTH, RENDER_HEIGHT);
+    screen = LoadRenderTexture(FFMPEG_VIDEO_WIDTH, FFMPEG_VIDEO_HEIGHT);
+    rendering_font = LoadFontEx("./assets/fonts/Vollkorn-Regular.ttf", RENDERING_FONT_SIZE, NULL, 0);
 
     while (!WindowShouldClose()) {
         if (IsKeyPressed(KEY_Q)) {
@@ -113,9 +178,9 @@ int main(int argc, char **argv) {
                 } else {
                     BeginTextureMode(screen);
                     plug_update(CLITERAL(Env) {
-                        .screen_width = RENDER_WIDTH,
-                        .screen_height = RENDER_HEIGHT,
-                        .delta_time = RENDER_DELTA_TIME,
+                        .screen_width = FFMPEG_VIDEO_WIDTH,
+                        .screen_height = FFMPEG_VIDEO_HEIGHT,
+                        .delta_time = FFMPEG_VIDEO_DELTA_TIME,
                         .rendering = true,
                         .play_sound = dummy_play_sound,
                     });
@@ -126,6 +191,8 @@ int main(int argc, char **argv) {
                         finish_ffmpeg_video_rendering();
                     }
                     UnloadImage(image);
+
+                    rendering_scene("Rendering Video");
                 }
             } else if (ffmpeg_audio) {
                 if (plug_finished() || IsKeyPressed(KEY_ESCAPE)) {
@@ -133,9 +200,9 @@ int main(int argc, char **argv) {
                 } else {
                     BeginTextureMode(screen);
                     plug_update(CLITERAL(Env) {
-                        .screen_width = RENDER_WIDTH,
-                        .screen_height = RENDER_HEIGHT,
-                        .delta_time = RENDER_DELTA_TIME,
+                        .screen_width = FFMPEG_VIDEO_WIDTH,
+                        .screen_height = FFMPEG_VIDEO_HEIGHT,
+                        .delta_time = FFMPEG_VIDEO_DELTA_TIME,
                         .rendering = true,
                         .play_sound = ffmpeg_play_sound,
                     });
@@ -148,9 +215,9 @@ int main(int argc, char **argv) {
                     // UnloadImage(image);
 
                     size_t frame_count = ffmpeg_wave.frameCount;
-                    size_t frame_size = 4; //ffmpeg_wave.sampleSize/8*ffmpeg_wave.channels;
+                    size_t frame_size = FFMPEG_SOUND_SAMPLE_SIZE_BYTES*FFMPEG_SOUND_CHANNELS;
                     size_t frames_begin = ffmpeg_wave_cursor;
-                    size_t frames_end = ffmpeg_wave_cursor + RENDER_SPF;
+                    size_t frames_end = ffmpeg_wave_cursor + FFMPEG_SOUND_SPF;
                     if (frames_end > frame_count) {
                         frames_end = frame_count;
                     }
@@ -161,16 +228,18 @@ int main(int argc, char **argv) {
                         finish_ffmpeg_audio_rendering();
                     }
                     ffmpeg_wave_cursor += frames_end - frames_begin;
-                    size_t silence_size = (RENDER_SPF - (frames_end - frames_begin))*frame_size;
+                    size_t silence_size = (FFMPEG_SOUND_SPF - (frames_end - frames_begin))*frame_size;
                     // TraceLog(LOG_WARNING, "SOUND: %zu", silence_size);
                     if (!ffmpeg_send_sound_samples(ffmpeg_audio, silence, silence_size)) {
                         finish_ffmpeg_audio_rendering();
                     }
+
+                    rendering_scene("Rendering Audio");
                 }
             } else {
                 if (IsKeyPressed(KEY_R)) {
                     SetTraceLogLevel(LOG_WARNING);
-                    ffmpeg_video = ffmpeg_start_rendering_video("output.mp4", RENDER_WIDTH, RENDER_HEIGHT, RENDER_FPS);
+                    ffmpeg_video = ffmpeg_start_rendering_video("output.mp4", FFMPEG_VIDEO_WIDTH, FFMPEG_VIDEO_HEIGHT, FFMPEG_VIDEO_FPS);
                     plug_reset();
                 } else if (IsKeyPressed(KEY_T)) {
                     SetTraceLogLevel(LOG_WARNING);
