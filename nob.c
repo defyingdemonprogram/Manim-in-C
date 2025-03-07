@@ -43,11 +43,12 @@ int main(int argc, char **argv) {
 
 	if (!nob_mkdir_if_not_exists(BUILD_DIR)) return 1;
 
-	if (!build_plug(&cmd, SRC_DIR"/tm.c", BUILD_DIR"libplug.so")) return 1;
+	if (!build_plug(&cmd, SRC_DIR"/tm.c", BUILD_DIR"libtm.so")) return 1;
+	if (!build_plug(&cmd, SRC_DIR"/template.c", BUILD_DIR"libtemplate.so")) return 1;
 	if (!build_panim(&cmd)) return 1;
 
-	cmd.count = 0;
-	nob_cmd_append(&cmd, BUILD_DIR"panim", BUILD_DIR"libplug.so");
-	if (nob_cmd_run_sync(cmd)) return 1;
+	// cmd.count = 0;
+	// nob_cmd_append(&cmd, BUILD_DIR"panim", BUILD_DIR"libtm.so");
+	// if (nob_cmd_run_sync(cmd)) return 1;
 	return 0;
 }

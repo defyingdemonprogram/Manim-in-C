@@ -11,7 +11,7 @@ cc -o nob nob.c  # Run this only once
 
 1. Running the Project
 ```bash
-./build/panim ./build/libplug.so
+./build/panim ./build/libtm.so
 ```
 
 **Major Hotkeys for the Program**:
@@ -26,7 +26,7 @@ cc -o nob nob.c  # Run this only once
 The engine is composed of two main components:
 
 1. **Panim Executable** – This is the core engine.
-2. **Animation Dynamic Library** – Also known as `libplug.so`, this is the library that the user of Panim develops.
+2. **Animation Dynamic Library** – Also known as `libtm.so`, this is the library that the user of Panim develops.
 
 The **Panim Executable** allows you to control your animation: pause, replay, and, most importantly, render it into a final video using FFmpeg. It also offers the ability to dynamically reload the animation library without restarting the entire engine, which significantly improves the development feedback loop.
 
