@@ -58,17 +58,19 @@ static bool reload_libplug(const char *libplug_path) {
 }
 
 static void finish_ffmpeg_video_rendering(void) {
+    SetTraceLogLevel(LOG_INFO);
     ffmpeg_end_rendering(ffmpeg_video, false);
     plug_reset();
+    paused = true;
     ffmpeg_video = NULL;
-    SetTraceLogLevel(LOG_INFO);
 }
 
 static void finish_ffmpeg_audio_rendering(void) {
+    SetTraceLogLevel(LOG_INFO);
     ffmpeg_end_rendering(ffmpeg_audio, false);
     plug_reset();
+    paused = true;
     ffmpeg_audio = NULL;
-    SetTraceLogLevel(LOG_INFO);
 }
 
 void dummy_play_sound(Sound _sound, Wave _wave) {
@@ -191,9 +193,8 @@ int main(int argc, char **argv) {
                         finish_ffmpeg_video_rendering();
                     }
                     UnloadImage(image);
-
-                    rendering_scene("Rendering Video");
                 }
+                rendering_scene("Rendering Video");
             } else if (ffmpeg_audio) {
                 if (plug_finished() || IsKeyPressed(KEY_ESCAPE)) {
                     finish_ffmpeg_audio_rendering();
@@ -233,9 +234,8 @@ int main(int argc, char **argv) {
                     if (!ffmpeg_send_sound_samples(ffmpeg_audio, silence, silence_size)) {
                         finish_ffmpeg_audio_rendering();
                     }
-
-                    rendering_scene("Rendering Audio");
                 }
+                rendering_scene("Rendering Audio");
             } else {
                 if (IsKeyPressed(KEY_R)) {
                     SetTraceLogLevel(LOG_WARNING);
