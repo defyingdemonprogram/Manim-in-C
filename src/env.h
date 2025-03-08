@@ -10,7 +10,7 @@ typedef struct {
     float screen_height;
     bool rendering;
     void (*play_sound)(Sound sound, Wave wave);
-    void *params;
+    // void *params;
 } Env;
 
 #endif // ENV_H

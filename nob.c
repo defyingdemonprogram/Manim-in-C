@@ -45,6 +45,7 @@ int main(int argc, char **argv) {
 
 	if (!build_plug(&cmd, SRC_DIR"/tm.c", BUILD_DIR"libtm.so")) return 1;
 	if (!build_plug(&cmd, SRC_DIR"/template.c", BUILD_DIR"libtemplate.so")) return 1;
+	if (!build_plug(&cmd, SRC_DIR"/squares.c", BUILD_DIR"libsquares.so")) return 1;
 	if (!build_panim(&cmd)) return 1;
 
 	// cmd.count = 0;
