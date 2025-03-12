@@ -9,8 +9,9 @@ static inline float smoothstep(float x) {
     return 3*x*x - 2*x*x*x;
 }
 
-static inline float sinstep(float t)
-{
+static inline float sinstep(float t) {
+    if (t < 0.0) return 0.0;
+    if (t >= 1.0) return 1.0;
     return (sinf(PI*t - PI*0.5) + 1)*0.5;
 }
 

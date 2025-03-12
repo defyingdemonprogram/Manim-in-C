@@ -63,14 +63,13 @@ typedef struct {
 
 typedef struct {
     int index;
-    const char *state;
+    float offset;
 } Head;
 
 typedef enum {
     ACTION_MOVE,
     ACTION_WRITE,
     ACTION_WRITE_ALL,
-    ACTION_SWITCH,
     ACTION_INTRO,
     ACTION_OUTRO,
     ACTION_WAIT,
@@ -129,7 +128,6 @@ static void action(Action_Kind kind, ...) {
         case ACTION_MOVE:        action.as.move      = va_arg(args, Direction);     break;
         case ACTION_WRITE:       action.as.write     = va_arg(args, const char *);  break;
         case ACTION_WRITE_ALL:   action.as.write_all = va_arg(args, const char *);  break;
-        case ACTION_SWITCH:      action.as.sweetch   = va_arg(args, const char *);  break;
         case ACTION_INTRO:       action.as.intro     = va_arg(args, size_t);        break;
         case ACTION_OUTRO:                                                         break;
         case ACTION_WAIT:        action.as.wait      = (float)va_arg(args, double); break;
@@ -168,7 +166,7 @@ static void load_assets(void) {
     {
         action(ACTION_INTRO, START_AT_CELL_INDEX);
         action(ACTION_WAIT, 0.25f);
-        action(ACTION_SWITCH, "Inc");
+        // action(ACTION_SWITCH, "Inc");
         action(ACTION_WRITE_ALL, "1");
         action(ACTION_WAIT, 0.25f);
         action(ACTION_WRITE_ALL, "2");
@@ -182,16 +180,16 @@ static void load_assets(void) {
         action(ACTION_WRITE, "0");
         action(ACTION_MOVE, DIR_RIGHT);
         action(ACTION_WRITE, "1");
-        action(ACTION_SWITCH, "Halt");
+        // action(ACTION_SWITCH, "Halt");
         action(ACTION_WAIT, 1.0f);
-        action(ACTION_SWITCH, "");
+        // action(ACTION_SWITCH, "");
         action(ACTION_OUTRO);
 
         action(ACTION_WAIT, 1.0f);
 
         action(ACTION_INTRO, START_AT_CELL_INDEX);
         action(ACTION_WAIT, 0.25f);
-        action(ACTION_SWITCH, "Dec");
+        // action(ACTION_SWITCH, "Dec");
         action(ACTION_WRITE, "1");
         action(ACTION_MOVE, DIR_RIGHT);
         action(ACTION_WRITE, "1");
@@ -199,9 +197,9 @@ static void load_assets(void) {
         action(ACTION_WRITE, "1");
         action(ACTION_MOVE, DIR_RIGHT);
         action(ACTION_WRITE, "0");
-        action(ACTION_SWITCH, "Halt");
+        // action(ACTION_SWITCH, "Halt");
         action(ACTION_WAIT, 1.0f);
-        action(ACTION_SWITCH, "");
+        // action(ACTION_SWITCH, "");
         action(ACTION_OUTRO);
     }
 }
@@ -221,7 +219,6 @@ void plug_reset(void)
     p->action_t = 0.0f;
     arena_reset(&p->tape_strings);
     p->head.index = 0;
-    p->head.state = arena_strdup(&p->tape_strings, "");
     p->tape.count = 0;
     char *zero = arena_strdup(&p->tape_strings, "0");
     char *one = arena_strdup(&p->tape_strings, "1");
@@ -294,14 +291,16 @@ static void text_in_rec(Rectangle rec, const char *from_text, const char *to_tex
     }
 }
 
-static void render_tape(float w, float h, float t) {
+static void render_tape(float w, float h) {
     float cell_width = CELL_WIDTH;
     float cell_height = CELL_HEIGHT;
     float cell_pad = CELL_PAD;
 
+    float _t = (float)p->head.index + p->head.offset;
+
     for (size_t i = 0; i < p->tape.count; ++i) {
         Rectangle rec = {
-            .x = i*(cell_width + cell_pad) + w/2 - cell_width/2 - Lerp(-20.0, t, p->scene_t)*(cell_width + cell_pad),
+            .x = i*(cell_width + cell_pad) + w/2 - cell_width/2 - Lerp(-20.0, _t, p->scene_t)*(cell_width + cell_pad),
             .y = h/2 - cell_height/2 - p->tape_y_offset,
             .width = cell_width,
             .height = cell_height,
@@ -312,7 +311,7 @@ static void render_tape(float w, float h, float t) {
     }
 }
 
-static void render_head(float w, float h, float state_t) {
+static void render_head(float w, float h) {
     float head_thick = 20.0;
     Rectangle rec = {
         .width = CELL_WIDTH + head_thick*3 + (1 - p->scene_t)*head_thick*3,
@@ -321,25 +320,6 @@ static void render_head(float w, float h, float state_t) {
     rec.x = w/2 - rec.width/2;
     rec.y = h/2 - rec.height/2 - p->tape_y_offset;
     DrawRectangleLinesEx(rec, head_thick, ColorAlpha(HEAD_COLOR, p->scene_t));
-
-    const char *text = p->head.state;
-    float font_size = FONT_SIZE;
-    Rectangle text_rec = {
-        .x = rec.x,
-        .y = rec.y + rec.height,
-        .width = rec.width,
-        .height = font_size*1.5,
-    };
-    if (
-        // there is a currently executing instruction
-        p->ip < p->script.count &&
-        // the instruction is ACTION_SWITCH
-        p->script.items[p->ip].kind == ACTION_SWITCH
-    ) {
-        text_in_rec(text_rec, text, p->script.items[p->ip].as.sweetch, state_t, ColorAlpha(CELL_COLOR, p->scene_t));
-    } else {
-        text_in_rec(text_rec, text, "", 0.0, ColorAlpha(CELL_COLOR, p->scene_t));
-    }
 }
 
 static void next_action(void) {
@@ -349,12 +329,19 @@ static void next_action(void) {
 }
 
 void plug_update(Env env) {
-
     float dt = env.delta_time;
     float w = env.screen_width;
     float h = env.screen_height;
 
     ClearBackground(BACKGROUND_COLOR);
+
+    const char *text = "Turing Machine";
+    Vector2 text_size = MeasureTextEx(p->font, text, FONT_SIZE, 0);
+
+    Vector2 position = {env.screen_width/2, env.screen_height/6};
+    position = Vector2Subtract(position, Vector2Scale(text_size, 0.5));
+    DrawTextEx(p->font, text, position, FONT_SIZE, 0, WHITE);
+
 
     if (p->ip < p->script.count) {
         Action action = p->script.items[p->ip];
@@ -381,9 +368,6 @@ void plug_update(Env env) {
                     p->tape.items[i].t = sinstep(p->action_t);
                 }
 
-                render_tape(w, h, (float)p->head.index);
-                render_head(w, h, 0.0f);
-
                 if (p->action_t >= 1.0f) {
                     for (size_t i = 0; i < p->tape.count; ++i) {
                         p->tape.items[i].symbol_a = p->tape.items[i].symbol_b;
@@ -401,8 +385,6 @@ void plug_update(Env env) {
                 }
 
                 p->action_t = (p->action_t*action.as.wait + dt)/action.as.wait;
-                render_tape(w, h, (float)p->head.index);
-                render_head(w, h, 0.0);
 
                 if (p->action_t >= 1.0f) {
                     // nothing to teardown
@@ -413,17 +395,13 @@ void plug_update(Env env) {
             case ACTION_INTRO: {
                 if (!p->action_init) {
                     p->action_init = true;
-                    // nothing to setup
+                    p->head.index = action.as.intro;
                 }
 
                 p->action_t = (p->action_t*INTRO_DURATION + dt)/INTRO_DURATION;
                 p->scene_t = sinstep(p->action_t);
-                render_tape(w, h, (float)action.as.intro);
-                render_head(w, h, 0.0f);
 
                 if (p->action_t >= 1.0) {
-                    p->head.index = action.as.intro;
-                    p->scene_t = 1;
                     next_action();
                 }
             } break;
@@ -436,8 +414,6 @@ void plug_update(Env env) {
 
                 p->action_t = (p->action_t*INTRO_DURATION + dt)/INTRO_DURATION;
                 p->scene_t = sinstep(1.0f - p->action_t);
-                render_tape(w, h, (float)p->head.index);
-                render_head(w, h, 0.0f);
 
                 if (p->action_t >= 1.0) {
                     p->scene_t = 0;
@@ -454,32 +430,11 @@ void plug_update(Env env) {
 
                 p->action_t = (p->action_t*HEAD_MOVING_DURATION + dt)/HEAD_MOVING_DURATION;
 
-                float from = (float)p->head.index;
-                float to = (float)(p->head.index + action.as.move);
-                float t = Lerp(from, to, sinstep(p->action_t));
-                render_tape(w, h, t);
-                render_head(w, h, 0.0f);
+                p->head.offset = Lerp(0, action.as.move, sinstep(p->action_t));
 
                 if (p->action_t >= 1.0) {
                     p->head.index += action.as.move;
-
-                    next_action();
-                }
-            } break;
-
-            case ACTION_SWITCH: {
-                if (!p->action_init) {
-                    p->action_init = true;
-                    // nothing to setup
-                }
-
-                p->action_t = (p->action_t*HEAD_WRITING_DURATION + dt)/HEAD_WRITING_DURATION;
-
-                render_tape(w, h, (float)p->head.index);
-                render_head(w, h, sinstep(p->action_t));
-
-                if (p->action_t >= 1.0) {
-                    p->head.state = arena_strdup(&p->tape_strings, action.as.sweetch);
+                    p->head.offset = 0.0f;
 
                     next_action();
                 }
@@ -508,9 +463,6 @@ void plug_update(Env env) {
 
                 cell->t = sinstep(p->action_t);
 
-                render_tape(w, h, (float)p->head.index);
-                render_head(w, h, 0.0f);
-
                 if (p->action_t >= 1.0) {
                     if (cell) {
                         cell->symbol_a = cell->symbol_b;
@@ -522,6 +474,9 @@ void plug_update(Env env) {
             } break;
         }
     }
+
+    render_tape(w, h);
+    render_head(w, h);
 }
 
 bool plug_finished(void) {
