@@ -70,3 +70,5 @@ bool plug_finished(void) {
     return true;
 }
 
+#define ARENA_IMPLEMENTATION
+#include "arena.h"
