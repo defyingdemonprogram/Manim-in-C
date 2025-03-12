@@ -4,8 +4,8 @@
 #include "raymath.h"
 
 Task_VTable task_vtable = {0};
-size_t TASK_MOVE_V2_TAG = 0;
-size_t TASK_MOVE_V4_TAG = 0;
+size_t TASK_MOVE_vec2_TAG = 0;
+size_t TASK_MOVE_vec4_TAG = 0;
 size_t TASK_SEQ_TAG = 0;
 size_t TASK_GROUP_TAG = 0;
 size_t TASK_WAIT_TAG = 0;
@@ -28,13 +28,13 @@ size_t task_vtable_register(Arena *a, Task_Funcs funcs) {
 void task_vtable_rebuild(Arena *a) {
     memset(&task_vtable, 0, sizeof(task_vtable));
 
-    TASK_MOVE_V2_TAG = task_vtable_register(a, (Task_Funcs) {
-        .update = task_move_v2_update,
-        .reset = task_move_v2_reset,
+    TASK_MOVE_vec2_TAG = task_vtable_register(a, (Task_Funcs) {
+        .update = task_move_vec2_update,
+        .reset = task_move_vec2_reset,
     });
-    TASK_MOVE_V4_TAG = task_vtable_register(a, (Task_Funcs) {
-        .update = task_move_v4_update,
-        .reset = task_move_v4_reset,
+    TASK_MOVE_vec4_TAG = task_vtable_register(a, (Task_Funcs) {
+        .update = task_move_vec4_update,
+        .reset = task_move_vec4_reset,
     });
     TASK_SEQ_TAG = task_vtable_register(a, (Task_Funcs) {
         .update = task_seq_update,
@@ -54,15 +54,15 @@ void task_vtable_rebuild(Arena *a) {
     });
 }
 
-void task_move_v2_reset(Env env, void *raw_data) {
+void task_move_vec2_reset(Env env, void *raw_data) {
     (void) env;
-    Move_V2_Data *data = raw_data;
+    Move_vec2_Data *data = raw_data;
     data->t = 0.0f;
     data->init = false;
 }
 
-bool task_move_v2_update(Env env, void *raw_data) {
-    Move_V2_Data *data = raw_data;
+bool task_move_vec2_update(Env env, void *raw_data) {
+    Move_vec2_Data *data = raw_data;
     if (data->t >= 1.0f) return true; // task is done
 
     if (!data->init) {
@@ -76,27 +76,27 @@ bool task_move_v2_update(Env env, void *raw_data) {
     return data->t >= 1.0f;
 }
 
-Task task_move_v2(Arena *a, Vector2 *value, Vector2 target, float duration) {
-    Move_V2_Data *data = arena_alloc(a, sizeof(*data));
+Task task_move_vec2(Arena *a, Vector2 *value, Vector2 target, float duration) {
+    Move_vec2_Data *data = arena_alloc(a, sizeof(*data));
     memset(data, 0, sizeof(*data));
     data->value = value;
     data->target = target;
     data->duration = duration;
     return (Task) {
-        .tag = TASK_MOVE_V2_TAG,
+        .tag = TASK_MOVE_vec2_TAG,
         .data = data,
     };
 }
 
-void task_move_v4_reset(Env env, void *raw_data) {
+void task_move_vec4_reset(Env env, void *raw_data) {
     (void) env;
-    Move_V4_Data *data = raw_data;
+    Move_vec4_Data *data = raw_data;
     data->t = 0.0f;
     data->init = false;
 }
 
-bool task_move_v4_update(Env env, void *raw_data) {
-    Move_V4_Data *data = raw_data;
+bool task_move_vec4_update(Env env, void *raw_data) {
+    Move_vec4_Data *data = raw_data;
     if (data->t >= 1.0f) return true;
 
     if (!data->init) {
@@ -110,14 +110,14 @@ bool task_move_v4_update(Env env, void *raw_data) {
     return data->t >= 1.0f;
 }
 
-Task task_move_v4(Arena *a, Vector4 *value, Color target, float duration) {
-    Move_V4_Data *data = arena_alloc(a, sizeof(*data));
+Task task_move_vec4(Arena *a, Vector4 *value, Color target, float duration) {
+    Move_vec4_Data *data = arena_alloc(a, sizeof(*data));
     memset(data, 0, sizeof(*data));
     data->value = value;
     data->target = ColorNormalize(target);
     data->duration = duration;
     return (Task) {
-        .tag = TASK_MOVE_V4_TAG,
+        .tag = TASK_MOVE_vec4_TAG,
         .data = data,
     };
 }
