@@ -27,6 +27,7 @@ typedef struct {
     size_t size;
     Font font;
     Arena state_arena;
+    Arena asset_arena;
     Square squares[SQUARES_COUNT];
     Task task;
     bool finished;
@@ -43,6 +44,9 @@ Vector2 grid(size_t row, size_t col) {
 
 static void load_assets(void) {
     p->font = LoadFontEx("./assets/fonts/Vollkorn-Regular.ttf", FONT_SIZE, NULL, 0);
+    Arena *a = &p->asset_arena;
+    arena_reset(a);
+    task_vtable_rebuild(a);
 }
 
 static void unload_assets(void) {
@@ -70,10 +74,12 @@ Task loading(Arena *a) {
     Square *s1 = &p->squares[0];
     Square *s2 = &p->squares[1];
     Square *s3 = &p->squares[2];
-    return task_seq(a,
+    return task_repeat(a, 3, task_seq(a,
         shuffle_squares(a, s1, s2, s3),
         shuffle_squares(a, s2, s3, s1),
-        shuffle_squares(a, s3, s1, s2));
+        shuffle_squares(a, s3, s1, s2),
+        task_wait(a, 1.0f)
+    ));
 }
 
 void plug_reset(void) {
@@ -115,7 +121,7 @@ void plug_post_reload(void *state) {
 }
 
 void plug_update(Env env) {
-    p->finished = p->task.update(env, p->task.data);
+    p->finished = task_update(p->task, env);
 
     ClearBackground(BACKGROUND_COLOR);
 
