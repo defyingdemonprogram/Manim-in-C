@@ -5,10 +5,9 @@
 #include "raymath.h"
 
 #include "nob.h"
-#define ARENA_IMPLEMENTATION
-#include "arena.h"
 #include "env.h"
 #include "interpolators.h"
+#include "tasks.h"
 
 #if 0
     #define CELL_COLOR ColorFromHSV(0, 0.0, 0.15)
@@ -21,7 +20,7 @@
 #endif
 
 #define FONT_SIZE 52
-#define CELL_WIDTH 150.0f
+#define CELL_WIDTH 100.0f
 #define CELL_HEIGHT 100.0f
 #define CELL_PAD (CELL_WIDTH*0.15f)
 #define START_AT_CELL_INDEX 10
@@ -66,51 +65,20 @@ typedef struct {
     float offset;
 } Head;
 
-typedef enum {
-    ACTION_MOVE,
-    ACTION_WRITE,
-    ACTION_WRITE_ALL,
-    ACTION_INTRO,
-    ACTION_OUTRO,
-    ACTION_WAIT,
-} Action_Kind;
-
-typedef union {
-    Direction move;
-    const char *write;
-    const char *write_all;
-    const char *sweetch;
-    size_t intro; // index of the tape to settle on
-    size_t jump;  // action to jump to
-    float wait;
-} Action_As;
-
-typedef struct {
-    Action_Kind kind;
-    Action_As as;
-} Action;
-
-typedef struct {
-    Action *items;
-    size_t count;
-    size_t capacity;
-} Script;
-
 typedef struct {
     size_t size;
 
     // State (survives the plugin reload, reset on plug_reset)
-    size_t ip;
-    float action_t;
-    float action_init;
-    Arena tape_strings;
+    Arena arena_state;
     Head head;
     Tape tape;
     float scene_t;
     float tape_y_offset;
+    Task task;
+    bool finished;
 
     // Assets (reloads along with plugin, does not change throughout the animation)
-    Script script;
+    Arena arena_assets;
     Table table;
     Font font;
     Sound write_sound;
@@ -120,23 +88,165 @@ typedef struct {
 
 static Plug *p = NULL;
 
-static void action(Action_Kind kind, ...) {
-    Action action = { .kind = kind };
-    va_list args;
-    va_start(args, kind);
-    switch (kind) {
-        case ACTION_MOVE:        action.as.move      = va_arg(args, Direction);     break;
-        case ACTION_WRITE:       action.as.write     = va_arg(args, const char *);  break;
-        case ACTION_WRITE_ALL:   action.as.write_all = va_arg(args, const char *);  break;
-        case ACTION_INTRO:       action.as.intro     = va_arg(args, size_t);        break;
-        case ACTION_OUTRO:                                                         break;
-        case ACTION_WAIT:        action.as.wait      = (float)va_arg(args, double); break;
-        default:
-            fprintf(stderr, "UNREACHABLE\n");
-            abort();
+static Tag TASK_INTRO_TAG = 0;
+static Tag TASK_MOVE_HEAD_TAG = 0;
+static Tag TASK_WRITE_HEAD_TAG = 0;
+static Tag TASK_WRITE_ALL_TAG = 0;
+
+typedef struct {
+    size_t head;
+    Move_Scalar_Data scene;
+} Intro_Data;
+
+bool task_intro_update(Intro_Data *data, Env env) {
+    if (!data->scene.init) p->head.index = data->head;
+    return task_move_scalar_update(&data->scene, env);
+}
+
+Task task_intro(Arena *a, size_t head) {
+    Intro_Data *data = arena_alloc(a, sizeof(*data));
+    memset(data, 0, sizeof(*data));
+    data->head = head;
+    data->scene.value = &p->scene_t;
+    data->scene.target = 1.0f;
+    data->scene.duration = INTRO_DURATION;
+    return (Task) {
+        .tag = TASK_INTRO_TAG,
+        .data = data,
+    };
+}
+
+typedef struct {
+    Direction dir;
+    Move_Scalar_Data head;
+} Move_Head_Data;
+
+bool move_head_update(Move_Head_Data *data, Env env) {
+    if (task_move_scalar_update(&data->head, env)) {
+        p->head.offset = 0.0f;
+        p->head.index += data->dir;
+        return true;
     }
-    va_end(args);
-    nob_da_append(&p->script, action);
+    return false;
+}
+
+Move_Head_Data move_head(Direction dir) {
+    return (Move_Head_Data) {
+        .head = {
+            .value = &p->head.offset,
+            .target = dir,
+            .duration = HEAD_MOVING_DURATION,
+        },
+        .dir = dir,
+    };
+}
+
+Task task_move_head(Arena *a, Direction dir) {
+    Move_Head_Data data = move_head(dir);
+    return (Task) {
+        .tag = TASK_MOVE_HEAD_TAG,
+        .data = arena_memdup(a, &data, sizeof(data)),
+    };
+}
+
+typedef struct {
+    const char *write;
+    Move_Scalar_Data head;
+} Write_Head_Data;
+
+bool write_head_update(Write_Head_Data *data, Env env) {
+    if (data->head.t >= 1.0f) return true;
+
+    Cell *cell = NULL;
+    if ((size_t)p->head.index < p->tape.count) {
+        cell = &p->tape.items[(size_t)p->head.index];
+    }
+
+    if (!data->head.init) {
+        if (cell) {
+            cell->symbol_b = data->write;
+            data->head.value = &cell->t;
+        }
+    }
+
+    float t1 = data->head.t;
+    bool finished = task_move_scalar_update(&data->head, env);
+    float t2 = data->head.t;
+
+    if (t1 < 0.5 && t2 >= 0.5) {
+        env.play_sound(p->write_sound, p->write_wave);
+    }
+
+    if (finished) {
+        if (cell) {
+            cell->symbol_a = cell->symbol_b;
+            cell->t = 0.0;
+        }
+    }
+
+    return finished;
+}
+
+Task task_write_head(Arena *a, const char *write) {
+    Write_Head_Data *data = arena_alloc(a, sizeof(*data));
+    memset(data, 0, sizeof(*data));
+    data->write = arena_strdup(a, write);
+    data->head.target = 1.0;
+    data->head.duration = HEAD_WRITING_DURATION;
+    return (Task) {
+        .tag = TASK_WRITE_HEAD_TAG,
+        .data = data,
+    };
+}
+
+typedef struct {
+    const char *write;
+    float t;
+    Move_Scalar_Data head;
+} Write_All_Data;
+
+bool write_all_update(Write_All_Data *data, Env env) {
+    if (data->head.t >= 1.0f) return true;
+
+    if (!data->head.init) {
+        for (size_t i = 0; i < p->tape.count; ++i) {
+            p->tape.items[i].symbol_b = data->write;
+        }
+    }
+
+    float t1 = data->head.t;
+    bool finished = task_move_scalar_update(&data->head, env);
+    float t2 = data->head.t;
+
+    if (t1 < 0.5 && t2 >= 0.5) {
+        env.play_sound(p->write_sound, p->write_wave);
+    }
+
+    for (size_t i = 0; i < p->tape.count; ++i) {
+        p->tape.items[i].t = data->t;
+    }
+
+    if (finished) {
+        for (size_t i = 0; i < p->tape.count; ++i) {
+            p->tape.items[i].symbol_a = p->tape.items[i].symbol_b;
+            p->tape.items[i].t = 0.0f;
+        }
+    }
+
+    return finished;
+}
+
+Task task_write_all(Arena *a, const char *write) {
+    Write_All_Data *data = arena_alloc(a, sizeof(*data));
+    memset(data, 0, sizeof(*data));
+    data->write = arena_strdup(a, write);
+    data->head.duration = HEAD_WRITING_DURATION;
+    data->head.value = &data->t;
+    data->head.target = 1.0f;
+    return (Task) {
+        .tag = TASK_WRITE_ALL_TAG,
+        .data = data,
+    };
 }
 
 static void table(const char *state, const char *read, const char *write, Direction step, const char *next) {
@@ -162,46 +272,21 @@ static void load_assets(void) {
         table("Inc", "1", "0", DIR_LEFT,  "Inc");
     }
 
-    // Script
-    {
-        action(ACTION_INTRO, START_AT_CELL_INDEX);
-        action(ACTION_WAIT, 0.25f);
-        // action(ACTION_SWITCH, "Inc");
-        action(ACTION_WRITE_ALL, "1");
-        action(ACTION_WAIT, 0.25f);
-        action(ACTION_WRITE_ALL, "2");
-        action(ACTION_WAIT, 0.25f);
-        action(ACTION_WRITE_ALL, "3");
-        action(ACTION_WAIT, 0.25f);
-        action(ACTION_WRITE, "0");
-        action(ACTION_MOVE, DIR_RIGHT);
-        action(ACTION_WRITE, "0");
-        action(ACTION_MOVE, DIR_RIGHT);
-        action(ACTION_WRITE, "0");
-        action(ACTION_MOVE, DIR_RIGHT);
-        action(ACTION_WRITE, "1");
-        // action(ACTION_SWITCH, "Halt");
-        action(ACTION_WAIT, 1.0f);
-        // action(ACTION_SWITCH, "");
-        action(ACTION_OUTRO);
-
-        action(ACTION_WAIT, 1.0f);
-
-        action(ACTION_INTRO, START_AT_CELL_INDEX);
-        action(ACTION_WAIT, 0.25f);
-        // action(ACTION_SWITCH, "Dec");
-        action(ACTION_WRITE, "1");
-        action(ACTION_MOVE, DIR_RIGHT);
-        action(ACTION_WRITE, "1");
-        action(ACTION_MOVE, DIR_RIGHT);
-        action(ACTION_WRITE, "1");
-        action(ACTION_MOVE, DIR_RIGHT);
-        action(ACTION_WRITE, "0");
-        // action(ACTION_SWITCH, "Halt");
-        action(ACTION_WAIT, 1.0f);
-        // action(ACTION_SWITCH, "");
-        action(ACTION_OUTRO);
-    }
+    Arena *a = &p->arena_assets;
+    arena_reset(a);
+    task_vtable_rebuild(a);
+    TASK_INTRO_TAG = task_vtable_register(a, (Task_Funcs) {
+        .update = (task_update_data_t)task_intro_update,
+    });
+    TASK_MOVE_HEAD_TAG = task_vtable_register(a, (Task_Funcs) {
+        .update = (task_update_data_t)move_head_update,
+    });
+    TASK_WRITE_HEAD_TAG = task_vtable_register(a, (Task_Funcs) {
+        .update = (task_update_data_t)write_head_update,
+    });
+    TASK_WRITE_ALL_TAG = task_vtable_register(a, (Task_Funcs) {
+        .update = (task_update_data_t)write_all_update,
+    });
 }
 
 static void unload_assets(void) {
@@ -209,19 +294,18 @@ static void unload_assets(void) {
     UnloadSound(p->write_sound);
     UnloadWave(p->write_wave);
     UnloadTexture(p->eggplant);
-    p->script.count = 0;
     p->table.count = 0;
 }
 
 void plug_reset(void)
 {
-    p->ip = 0;
-    p->action_t = 0.0f;
-    arena_reset(&p->tape_strings);
+    Arena *a = &p->arena_state;
+    arena_reset(a);
+
     p->head.index = 0;
     p->tape.count = 0;
-    char *zero = arena_strdup(&p->tape_strings, "0");
-    char *one = arena_strdup(&p->tape_strings, "1");
+    char *zero = arena_strdup(a, "0");
+    char *one = arena_strdup(a, "1");
     for (size_t i = 0; i < TAPE_SIZE; ++i) {
         Cell cell = {.symbol_a = zero,};
         nob_da_append(&p->tape, cell);
@@ -232,6 +316,40 @@ void plug_reset(void)
     p->tape.items[START_AT_CELL_INDEX + 2] = CLITERAL(Cell) { .symbol_a = one };
     p->scene_t = 0;
     p->tape_y_offset = 0.0f;
+
+    p->task = task_seq(a,
+        task_intro(a, START_AT_CELL_INDEX),
+        task_wait(a, 0.25),
+        task_write_all(a, "1"),
+        task_wait(a, 0.25),
+        task_write_all(a, "2"),
+        task_wait(a, 0.25),
+        task_write_all(a, "3"),
+        task_wait(a, 0.25),
+        task_write_head(a, "0"),
+        task_move_head(a, DIR_RIGHT),
+        task_write_head(a, "0"),
+        task_move_head(a, DIR_RIGHT),
+        task_write_head(a, "0"),
+        task_move_head(a, DIR_RIGHT),
+        task_write_head(a, "1"),
+        task_wait(a, 1),
+        task_move_scalar(a, &p->scene_t, 0.0, INTRO_DURATION),
+
+        task_wait(a, 1),
+
+        task_intro(a, START_AT_CELL_INDEX),
+        task_wait(a, 0.25),
+        task_write_head(a, "1"),
+        task_move_head(a, DIR_RIGHT),
+        task_write_head(a, "1"),
+        task_move_head(a, DIR_RIGHT),
+        task_write_head(a, "1"),
+        task_move_head(a, DIR_RIGHT),
+        task_write_head(a, "0"),
+        task_wait(a, 1),
+        task_move_scalar(a, &p->scene_t, 0.0, INTRO_DURATION));
+    p->finished = false;
 }
 
 void plug_init(void) {
@@ -291,7 +409,9 @@ static void text_in_rec(Rectangle rec, const char *from_text, const char *to_tex
     }
 }
 
-static void render_tape(float w, float h) {
+static void render_tape(Env env) {
+    float w = env.screen_width;
+    float h = env.screen_height;
     float cell_width = CELL_WIDTH;
     float cell_height = CELL_HEIGHT;
     float cell_pad = CELL_PAD;
@@ -311,7 +431,9 @@ static void render_tape(float w, float h) {
     }
 }
 
-static void render_head(float w, float h) {
+static void render_head(Env env) {
+    float w = env.screen_width;
+    float h = env.screen_height;
     float head_thick = 20.0;
     Rectangle rec = {
         .width = CELL_WIDTH + head_thick*3 + (1 - p->scene_t)*head_thick*3,
@@ -322,17 +444,7 @@ static void render_head(float w, float h) {
     DrawRectangleLinesEx(rec, head_thick, ColorAlpha(HEAD_COLOR, p->scene_t));
 }
 
-static void next_action(void) {
-    p->action_t = 0.0f;
-    p->action_init = false;
-    p->ip += 1;
-}
-
 void plug_update(Env env) {
-    float dt = env.delta_time;
-    float w = env.screen_width;
-    float h = env.screen_height;
-
     ClearBackground(BACKGROUND_COLOR);
 
     const char *text = "Turing Machine";
@@ -342,143 +454,14 @@ void plug_update(Env env) {
     position = Vector2Subtract(position, Vector2Scale(text_size, 0.5));
     DrawTextEx(p->font, text, position, FONT_SIZE, 0, WHITE);
 
-
-    if (p->ip < p->script.count) {
-        Action action = p->script.items[p->ip];
-        switch (action.kind) {
-            case ACTION_WRITE_ALL: {
-                if (!p->action_init) {
-                    p->action_init = true;
-                    char *symbol_b = arena_strdup(&p->tape_strings, action.as.write_all);
-                    for (size_t i = 0; i < p->tape.count; ++i) {
-                        p->tape.items[i].symbol_b = symbol_b;
-                        p->tape.items[i].t = 0.0f;
-                    }
-                }
-
-                float t1 = p->action_t;
-                p->action_t = (p->action_t*HEAD_WRITING_DURATION + dt)/HEAD_WRITING_DURATION;
-                float t2 = p->action_t;
-
-                if (t1 < 0.5 && t2 >= 0.5) {
-                    env.play_sound(p->write_sound, p->write_wave);
-                }
-
-                for (size_t i = 0; i < p->tape.count; ++i) {
-                    p->tape.items[i].t = sinstep(p->action_t);
-                }
-
-                if (p->action_t >= 1.0f) {
-                    for (size_t i = 0; i < p->tape.count; ++i) {
-                        p->tape.items[i].symbol_a = p->tape.items[i].symbol_b;
-                        p->tape.items[i].t = 0.0f;
-                    }
-
-                    next_action();
-                }
-            } break;
-
-            case ACTION_WAIT: {
-                if (!p->action_init) {
-                    p->action_init = true;
-                    // nothing to setup
-                }
-
-                p->action_t = (p->action_t*action.as.wait + dt)/action.as.wait;
-
-                if (p->action_t >= 1.0f) {
-                    // nothing to teardown
-                    next_action();
-                }
-            } break;
-
-            case ACTION_INTRO: {
-                if (!p->action_init) {
-                    p->action_init = true;
-                    p->head.index = action.as.intro;
-                }
-
-                p->action_t = (p->action_t*INTRO_DURATION + dt)/INTRO_DURATION;
-                p->scene_t = sinstep(p->action_t);
-
-                if (p->action_t >= 1.0) {
-                    next_action();
-                }
-            } break;
-
-            case ACTION_OUTRO: {
-                if (!p->action_init) {
-                    p->action_init = true;
-                    // nothing to setup
-                }
-
-                p->action_t = (p->action_t*INTRO_DURATION + dt)/INTRO_DURATION;
-                p->scene_t = sinstep(1.0f - p->action_t);
-
-                if (p->action_t >= 1.0) {
-                    p->scene_t = 0;
-
-                    next_action();
-                }
-            } break;
-
-            case ACTION_MOVE: {
-                if (!p->action_init) {
-                    p->action_init = true;
-                    // nothing to setup
-                }
-
-                p->action_t = (p->action_t*HEAD_MOVING_DURATION + dt)/HEAD_MOVING_DURATION;
-
-                p->head.offset = Lerp(0, action.as.move, sinstep(p->action_t));
-
-                if (p->action_t >= 1.0) {
-                    p->head.index += action.as.move;
-                    p->head.offset = 0.0f;
-
-                    next_action();
-                }
-            } break;
-
-            case ACTION_WRITE: {
-                Cell *cell = NULL;
-                if ((size_t)p->head.index < p->tape.count) {
-                    cell = &p->tape.items[(size_t)p->head.index];
-                }
-
-                if (!p->action_init) {
-                    p->action_init = true;
-                    if (cell) {
-                        cell->symbol_b = arena_strdup(&p->tape_strings, action.as.write);
-                    }
-                }
-
-                float t1 = p->action_t;
-                p->action_t = (p->action_t*HEAD_WRITING_DURATION + dt)/HEAD_WRITING_DURATION;
-                float t2 = p->action_t;
-
-                if (t1 < 0.5 && t2 >= 0.5) {
-                    env.play_sound(p->write_sound, p->write_wave);
-                }
-
-                cell->t = sinstep(p->action_t);
-
-                if (p->action_t >= 1.0) {
-                    if (cell) {
-                        cell->symbol_a = cell->symbol_b;
-                        cell->t = 0.0;
-                    }
-
-                    next_action();
-                }
-            } break;
-        }
-    }
-
-    render_tape(w, h);
-    render_head(w, h);
+    p->finished = task_update(p->task, env);
+    render_tape(env);
+    render_head(env);
 }
 
 bool plug_finished(void) {
-    return p->ip >= p->script.count;
+    return p->finished;
 }
+
+#define ARENA_IMPLEMENTATION
+#include "arena.h"
