@@ -19,6 +19,8 @@ cc -o nob nob.c  # Run this only once
 - <kbd>T</kbd>: Render the sound from the current Manim frame
 - <kbd>H</kbd>: Hot reload the program
 - <kbd>A</kbd>: Restart the animation
+- <kbd>SPACE</kbd>: Pause the animation
+- <kbd>SPACE</kbd>, <kbd>.</kbd>: Step the animation frame by frame
 - <kbd>ESC</kbd> or <kbd>Q</kbd>: Exit the program
 
 ### Architecture
