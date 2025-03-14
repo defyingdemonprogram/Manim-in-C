@@ -136,7 +136,7 @@ bool task_intro_update(Intro_Data *data, Env env) {
     if (wait_done(&data->wait)) return true;
     if (!data->wait.started) p->head.index = data->head;
     bool finished = wait_update(&data->wait, env);
-    p->scene_t = smoothstep(wait_norm(&data->wait));
+    p->scene_t = smoothstep(wait_interp(&data->wait));
     return finished;
 }
 
@@ -169,7 +169,7 @@ bool move_head_update(Move_Head_Data *data, Env env) {
         return true;
     }
 
-    p->head.offset = Lerp(0, data->dir, smoothstep(wait_norm(&data->wait)));
+    p->head.offset = Lerp(0, data->dir, smoothstep(wait_interp(&data->wait)));
     return false;
 }
 
@@ -206,9 +206,9 @@ bool write_head_update(Write_Head_Data *data, Env env) {
         cell->t = 0.0;
     }
 
-    float t1 = wait_norm(&data->wait);
+    float t1 = wait_interp(&data->wait);
     bool finished = wait_update(&data->wait, env);
-    float t2 = wait_norm(&data->wait);
+    float t2 = wait_interp(&data->wait);
 
     if (t1 < 0.5 && t2 >= 0.5) {
         env.play_sound(p->write_sound, p->write_wave);
@@ -254,9 +254,9 @@ bool write_all_update(Write_All_Data *data, Env env) {
         }
     }
 
-    float t1 = wait_norm(&data->wait);
+    float t1 = wait_interp(&data->wait);
     bool finished = wait_update(&data->wait, env);
-    float t2 = wait_norm(&data->wait);
+    float t2 = wait_interp(&data->wait);
 
     if (t1 < 0.5 && t2 >= 0.5) {
         env.play_sound(p->write_sound, p->write_wave);
