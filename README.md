@@ -4,15 +4,15 @@ This project is inspired by the Manim implementation from 3b1b, and the code is 
 
 ### Quick Start
 1. Build the project:
-```bash
-cc -o nob nob.c  # Run this only once
-./nob
-```
+    ```bash
+    cc -o nob nob.c  # Run this only once
+    ./nob
+    ```
 
 1. Running the Project
-```bash
-./build/panim ./build/libtm.so
-```
+    ```bash
+    ./build/panim ./build/libtm.so
+    ```
 
 **Major Hotkeys for the Program**:
 - <kbd>R</kbd>: Render the video from the current Manim frame
