@@ -19,9 +19,9 @@
     #define BACKGROUND_COLOR ColorFromHSV(120, 0.0, 1 - 0.88)
 #endif
 
-#define FONT_SIZE (2*52)
 #define CELL_WIDTH 200.0f
 #define CELL_HEIGHT 200.0f
+#define FONT_SIZE (CELL_WIDTH*0.52f)
 #define CELL_PAD (CELL_WIDTH*0.15f)
 #define START_AT_CELL_INDEX 5
 #define HEAD_MOVING_DURATION 0.5f
@@ -304,11 +304,17 @@ static void table(const char *state, const char *read, const char *write, Direct
 
 static void load_assets(void) {
     p->font = LoadFontEx("./assets/fonts/iosevka-regular.ttf", FONT_SIZE, NULL, 0);
+    GenTextureMipmaps(&p->font.texture);
+    SetTextureFilter(p->font.texture, TEXTURE_FILTER_BILINEAR);
     p->images[IMAGE_EGGPLANT] = LoadTexture("./assets/images/eggplant.png");
     p->images[IMAGE_100] = LoadTexture("./assets/images/100.png");
     p->images[IMAGE_FIRE] = LoadTexture("./assets/images/fire.png");
     p->images[IMAGE_JOY] = LoadTexture("./assets/images/joy.png");
     p->images[IMAGE_OK] = LoadTexture("./assets/images/ok.png");
+    for (size_t i = 0; i < COUNT_IMAGES; ++i) {
+        GenTextureMipmaps(&p->images[i]);
+        SetTextureFilter(p->images[i], TEXTURE_FILTER_BILINEAR);
+    }
     p->write_wave = LoadWave("./assets/sounds/plant-bomb.wav");
     p->write_sound = LoadSoundFromWave(p->write_wave);
 
@@ -345,58 +351,20 @@ static void unload_assets(void) {
     p->table.count = 0;
 }
 
-Task test_video(Arena *a) {
-    return task_seq(a,
-        task_intro(a, START_AT_CELL_INDEX),
-        task_wait(a, 0.25),
-        task_write_all(a, symbol_text(a, "1")),
-        task_wait(a, 0.25),
-        task_write_all(a, symbol_text(a, "2")),
-        task_wait(a, 0.25),
-        task_write_all(a, symbol_text(a, "3")),
-        task_wait(a, 0.25),
-        task_write_head(a, symbol_text(a, "0")),
-        task_move_head(a, DIR_RIGHT),
-        task_write_head(a, symbol_text(a, "0")),
-        task_move_head(a, DIR_RIGHT),
-        task_write_head(a, symbol_text(a, "0")),
-        task_move_head(a, DIR_RIGHT),
-        task_write_head(a, symbol_text(a, "1")),
-        task_wait(a, 1),
-        task_move_scalar(a, &p->scene_t, 0.0, INTRO_DURATION),
-
-        task_wait(a, 1),
-
-        task_intro(a, START_AT_CELL_INDEX),
-        task_wait(a, 0.25),
-        task_write_head(a, symbol_text(a, "1")),
-        task_move_head(a, DIR_RIGHT),
-        task_write_head(a, symbol_text(a, "1")),
-        task_move_head(a, DIR_RIGHT),
-        task_write_head(a, symbol_text(a, "1")),
-        task_move_head(a, DIR_RIGHT),
-        task_write_head(a, symbol_text(a, "0")),
-        task_wait(a, 1),
-        task_move_scalar(a, &p->scene_t, 0.0, INTRO_DURATION));
-}
-
 void plug_reset(void)
 {
     Arena *a = &p->arena_state;
     arena_reset(a);
 
     p->head.index = 0;
+    p->head.offset = 0;
     p->tape.count = 0;
     Symbol zero = symbol_text(a, "0");
-    Symbol one = symbol_text(a, "1");
     for (size_t i = 0; i < TAPE_SIZE; ++i) {
         Cell cell = {.symbol_a = zero,};
         nob_da_append(&p->tape, cell);
     }
 
-    p->tape.items[START_AT_CELL_INDEX + 0] = CLITERAL(Cell) { .symbol_a = one };
-    p->tape.items[START_AT_CELL_INDEX + 1] = CLITERAL(Cell) { .symbol_a = one };
-    p->tape.items[START_AT_CELL_INDEX + 2] = CLITERAL(Cell) { .symbol_a = one };
     p->scene_t = 0;
     p->tape_y_offset = 0.0f;
 
@@ -477,12 +445,15 @@ static void text_in_rec(Rectangle rec, const char *text, float t, Color color) {
 
 static void image_in_rec(Rectangle rec, Texture2D image, float t, Color color) {
     Vector2 cell_size = { rec.width, rec.height };
-    Vector2 image_size = { image.width, image.height };
-    image_size = Vector2Scale(image_size, t);
+    Vector2 image_size = { cell_size.x, cell_size.y };
+    image_size = Vector2Scale(image_size, t*0.52);
     Vector2 position = { rec.x, rec.y };
     position = Vector2Add(position, Vector2Scale(cell_size, 0.5));
     position = Vector2Subtract(position, Vector2Scale(image_size, 0.5));
-    DrawTextureEx(image, position, 0.0, t, ColorAlpha(color, t));
+
+    Rectangle source = { 0, 0, image.width, image.height };
+    Rectangle dest = { position.x, position.y, image_size.x, image_size.y };
+    DrawTexturePro(image, source, dest, Vector2Zero(), 0.0, color);
 }
 
 static void symbol_in_rec(Rectangle rec, Symbol symbol, float t, Color color) {
@@ -501,41 +472,6 @@ static void interp_symbol_in_rec(Rectangle rec, Symbol from_symbol, Symbol to_sy
     symbol_in_rec(rec, to_symbol, t, color);
 }
 
-static void render_tape(Env env) {
-    float w = env.screen_width;
-    float h = env.screen_height;
-    float cell_width = CELL_WIDTH;
-    float cell_height = CELL_HEIGHT;
-    float cell_pad = CELL_PAD;
-
-    float _t = (float)p->head.index + p->head.offset;
-
-    for (size_t i = 0; i < p->tape.count; ++i) {
-        Rectangle rec = {
-            .x = i*(cell_width + cell_pad) + w/2 - cell_width/2 - Lerp(-20.0, _t, p->scene_t)*(cell_width + cell_pad),
-            .y = h/2 - cell_height/2 - p->tape_y_offset,
-            .width = cell_width,
-            .height = cell_height,
-        };
-        DrawRectangleRec(rec, CELL_COLOR);
-
-        interp_symbol_in_rec(rec, p->tape.items[i].symbol_a, p->tape.items[i].symbol_b, p->tape.items[i].t, BACKGROUND_COLOR);
-    }
-}
-
-static void render_head(Env env) {
-    float w = env.screen_width;
-    float h = env.screen_height;
-    float head_thick = 20.0;
-    Rectangle rec = {
-        .width = CELL_WIDTH + head_thick*3 + (1 - p->scene_t)*head_thick*3,
-        .height = CELL_HEIGHT + head_thick*3 + (1 - p->scene_t)*head_thick*3,
-    };
-    rec.x = w/2 - rec.width/2;
-    rec.y = h/2 - rec.height/2 - p->tape_y_offset;
-    DrawRectangleLinesEx(rec, head_thick, ColorAlpha(HEAD_COLOR, p->scene_t));
-}
-
 void plug_update(Env env) {
     ClearBackground(BACKGROUND_COLOR);
 
@@ -545,10 +481,45 @@ void plug_update(Env env) {
     Vector2 position = {env.screen_width/2, env.screen_height/6};
     position = Vector2Subtract(position, Vector2Scale(text_size, 0.5));
     DrawTextEx(p->font, text, position, FONT_SIZE, 0, WHITE);
-
+    
     p->finished = task_update(p->task, env);
-    render_tape(env);
-    render_head(env);
+
+    float head_thick = 20.0;
+    Rectangle head_rec = {
+        .width = CELL_WIDTH + head_thick*3 + (1 - p->scene_t)*head_thick*3,
+        .height = CELL_HEIGHT + head_thick*3 + (1 - p->scene_t)*head_thick*3,
+    };
+    float t = ((float)p->head.index + p->head.offset);
+    head_rec.x = CELL_WIDTH/2 - head_rec.width/2 + Lerp(-20.0, t, p->scene_t)*(CELL_WIDTH + CELL_PAD);
+    head_rec.y = CELL_HEIGHT/2 - head_rec.height/2 - p->tape_y_offset;
+    Camera2D camera = {
+        .target = {
+            .x = head_rec.x + head_rec.width/2,
+            .y = head_rec.y + head_rec.height/2,
+        },
+        .zoom = Lerp(0.5, 1.0, p->scene_t),
+        .offset = {
+            .x = env.screen_width/2,
+            .y = env.screen_height/2,
+        },
+    };
+    BeginMode2D(camera);
+
+        for (size_t i = 0; i < p->tape.count; ++i) {
+            Rectangle rec = {
+                .x = i*(CELL_WIDTH + CELL_PAD),
+                .y = -p->tape_y_offset,
+                .width = CELL_WIDTH,
+                .height = CELL_HEIGHT,
+            };
+            DrawRectangleRec(rec, CELL_COLOR);
+
+            interp_symbol_in_rec(rec, p->tape.items[i].symbol_a, p->tape.items[i].symbol_b, p->tape.items[i].t, BACKGROUND_COLOR);
+        }
+
+        DrawRectangleLinesEx(head_rec, head_thick, ColorAlpha(HEAD_COLOR, p->scene_t));
+
+    EndMode2D();
 }
 
 bool plug_finished(void) {
