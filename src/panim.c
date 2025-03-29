@@ -3,6 +3,7 @@
 #include <math.h>
 
 #include "raylib.h"
+#include "raymath.h"
 
 #include <dlfcn.h>
 
@@ -22,6 +23,7 @@
 // SPF - Samples Per Frame
 #define FFMPEG_SOUND_SPF (FFMPEG_SOUND_SAMPLE_RATE/FFMPEG_VIDEO_FPS)
 #define RENDERING_FONT_SIZE 78
+#define POPUP_DISAPPER_TIME 1.5f
 
 // The state of Panim Engine
 static bool paused = false;
@@ -33,6 +35,9 @@ static void *libplug = NULL;
 static Wave ffmpeg_wave = {0};
 static size_t ffmpeg_wave_cursor = 0;
 static uint8_t silence[FFMPEG_SOUND_SPF*FFMPEG_SOUND_SAMPLE_SIZE_BYTES*FFMPEG_SOUND_CHANNELS] = {0};
+
+static float delta_time_multiplier = 1.0f;
+static float delta_time_multiplier_popup = 0.0f;
 
 static bool reload_libplug(const char *libplug_path) {
     if (libplug != NULL) {
@@ -57,17 +62,17 @@ static bool reload_libplug(const char *libplug_path) {
     return true;
 }
 
-static void finish_ffmpeg_video_rendering(void) {
+static void finish_ffmpeg_video_rendering(bool cancel) {
     SetTraceLogLevel(LOG_INFO);
-    ffmpeg_end_rendering(ffmpeg_video, false);
+    ffmpeg_end_rendering(ffmpeg_video, cancel);
     plug_reset();
     paused = true;
     ffmpeg_video = NULL;
 }
 
-static void finish_ffmpeg_audio_rendering(void) {
+static void finish_ffmpeg_audio_rendering(bool cancel) {
     SetTraceLogLevel(LOG_INFO);
-    ffmpeg_end_rendering(ffmpeg_audio, false);
+    ffmpeg_end_rendering(ffmpeg_audio, cancel);
     plug_reset();
     paused = true;
     ffmpeg_audio = NULL;
@@ -154,7 +159,7 @@ int main(int argc, char **argv) {
     }
 
     const char *libplug_path = nob_shift_args(&argc, &argv);
-        
+
     if (!reload_libplug(libplug_path)) return 1;
 
     float scale_factor = 100.0f;
@@ -170,13 +175,15 @@ int main(int argc, char **argv) {
 
     while (!WindowShouldClose()) {
         if (IsKeyPressed(KEY_Q)) {
-            printf("I have pressed Q");
+            nob_log(NOB_INFO, "Closing the window");
             break;;
         }
         BeginDrawing();
             if (ffmpeg_video) {
-                if (plug_finished() || IsKeyPressed(KEY_ESCAPE)) {
-                    finish_ffmpeg_video_rendering();
+                if (plug_finished()) {
+                    finish_ffmpeg_video_rendering(false);
+                } else if (IsKeyPressed(KEY_ESCAPE)) {
+                    finish_ffmpeg_video_rendering(true);
                 } else {
                     BeginTextureMode(screen);
                     plug_update(CLITERAL(Env) {
@@ -190,14 +197,16 @@ int main(int argc, char **argv) {
 
                     Image image = LoadImageFromTexture(screen.texture);
                     if (!ffmpeg_send_frame_flipped(ffmpeg_video, image.data, image.width, image.height)) {
-                        finish_ffmpeg_video_rendering();
+                        finish_ffmpeg_video_rendering(true);
                     }
                     UnloadImage(image);
                 }
                 rendering_scene("Rendering Video");
             } else if (ffmpeg_audio) {
-                if (plug_finished() || IsKeyPressed(KEY_ESCAPE)) {
-                    finish_ffmpeg_audio_rendering();
+                if (plug_finished()) {
+                    finish_ffmpeg_audio_rendering(false);
+                } else if (IsKeyPressed(KEY_ESCAPE)) {
+                    finish_ffmpeg_audio_rendering(true);
                 } else {
                     BeginTextureMode(screen);
                     plug_update(CLITERAL(Env) {
@@ -226,13 +235,13 @@ int main(int argc, char **argv) {
                     size_t sound_size = (frames_end - frames_begin)*frame_size;
                     // TraceLog(LOG_WARNING, "SOUND: %zu", sound_size);
                     if (!ffmpeg_send_sound_samples(ffmpeg_audio, sound_data, sound_size)) {
-                        finish_ffmpeg_audio_rendering();
+                        finish_ffmpeg_audio_rendering(true);
                     }
                     ffmpeg_wave_cursor += frames_end - frames_begin;
                     size_t silence_size = (FFMPEG_SOUND_SPF - (frames_end - frames_begin))*frame_size;
                     // TraceLog(LOG_WARNING, "SOUND: %zu", silence_size);
                     if (!ffmpeg_send_sound_samples(ffmpeg_audio, silence, silence_size)) {
-                        finish_ffmpeg_audio_rendering();
+                        finish_ffmpeg_audio_rendering(true);
                     }
                 }
                 rendering_scene("Rendering Audio");
@@ -260,24 +269,38 @@ int main(int argc, char **argv) {
                         plug_reset();
                     }
 
-                    float delta_time = 0.0;
-                    if (paused) {
-                        if (IsKeyPressed(KEY_PERIOD)) {
-                            delta_time = FFMPEG_VIDEO_DELTA_TIME;
-                        } else {
-                            delta_time = 0.0f;
-                        }
-                    } else {
-                        delta_time = GetFrameTime();
+                    if (IsKeyPressed(KEY_PERIOD)) {
+                        delta_time_multiplier += 0.1;
+                        delta_time_multiplier_popup = 1.0f;
                     }
-                    
+                    if (IsKeyPressed(KEY_COMMA) && delta_time_multiplier > 0.0f) {
+                        delta_time_multiplier -= 0.1;
+                        delta_time_multiplier_popup = 1.0f;
+                    }
+                    if (IsKeyPressed(KEY_ZERO)) {
+                        delta_time_multiplier = 1.0;
+                        delta_time_multiplier_popup = 1.0f;
+                    }
+
                     plug_update(CLITERAL(Env) {
                         .screen_width = GetScreenWidth(),
                         .screen_height = GetScreenHeight(),
-                        .delta_time = delta_time,
+                        .delta_time = paused ? 0.0 : GetFrameTime()*delta_time_multiplier,
                         .rendering = false,
                         .play_sound = preview_play_sound,
                     });
+
+                    const char *text = TextFormat("Delta Time Multiplier: %.2fx", delta_time_multiplier);
+                    Vector2 text_size = MeasureTextEx(rendering_font, text, RENDERING_FONT_SIZE, 0);
+                    Vector2 position = {
+                        GetScreenWidth()/2 - text_size.x/2,
+                        GetScreenHeight()/2 - text_size.y/2,
+                    };
+                    DrawTextEx(rendering_font, text, Vector2Subtract(position, (Vector2){3, 3}), RENDERING_FONT_SIZE, 0, ColorAlpha(BLACK, delta_time_multiplier_popup));
+                    DrawTextEx(rendering_font, text, position, RENDERING_FONT_SIZE, 0, ColorAlpha(WHITE, delta_time_multiplier_popup));
+                    if (delta_time_multiplier_popup > 0.0f) {
+                        delta_time_multiplier_popup = (delta_time_multiplier_popup*POPUP_DISAPPER_TIME - GetFrameTime())/POPUP_DISAPPER_TIME;
+                    }
                 }
             }
         EndDrawing();

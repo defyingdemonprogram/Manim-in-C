@@ -20,7 +20,8 @@ This project is inspired by the Manim implementation from 3b1b, and the code is 
 - <kbd>H</kbd>: Hot reload the program
 - <kbd>A</kbd>: Restart the animation
 - <kbd>SPACE</kbd>: Pause the animation
-- <kbd>SPACE</kbd>, <kbd>.</kbd>: Step the animation frame by frame
+- <kbd>.</kbd>: Speed up the animation by 0.1x
+- <kbd>,</kbd>: Speed down the animation by 0.1x
 - <kbd>ESC</kbd> or <kbd>Q</kbd>: Exit the program
 
 ### Architecture
