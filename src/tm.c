@@ -24,8 +24,8 @@
 #define FONT_SIZE (CELL_WIDTH*0.52f)
 #define CELL_PAD (CELL_WIDTH*0.15f)
 #define START_AT_CELL_INDEX 5
-#define HEAD_MOVING_DURATION 0.5f
-#define HEAD_WRITING_DURATION 0.2f
+#define HEAD_MOVING_DURATION 0.4f
+#define HEAD_WRITING_DURATION 0.4f
 #define INTRO_DURATION 1.0f
 #define TAPE_SIZE 50
 
@@ -88,12 +88,18 @@ typedef enum {
 
 typedef struct {
     Symbol symbols[COUNT_RULE_SYMBOLS];
+    float highlight[COUNT_RULE_SYMBOLS];
 } Rule;
 
 typedef struct {
     Rule *items;
     size_t count;
     size_t capacity;
+
+    float lines_t;
+    float symbols_t;
+    float head_t;
+    float head_offset_t;
 } Table;
 
 typedef struct {
@@ -121,19 +127,18 @@ typedef struct {
 
     // State (survives the plugin reload, reset on plug_reset)
     Arena arena_state;
-    Head head;
-    Tape tape;
-    float scene_t;
-    float tape_y_offset;
-    float table_lines_t;
-    float table_symbols_t;
-    float table_head_t;
-    Task task;
-    bool finished;
+    struct {
+        float t;
+        Head head;
+        Tape tape;
+        Table table;
+        float tape_y_offset;
+        Task task;
+        bool finished;
+    } scene;
 
     // Assets (reloads along with plugin, does not change throughout the animation)
     Arena arena_assets;
-    Table table;
     Font font;
     Sound write_sound;
     Wave write_wave;
@@ -142,10 +147,36 @@ typedef struct {
     Tag TASK_MOVE_HEAD_TAG;
     Tag TASK_WRITE_HEAD_TAG;
     Tag TASK_WRITE_ALL_TAG;
+    Tag TASK_WRITE_CELL_TAG;
+    Tag TASK_MOVE_AND_RESET_SCALAR_TAG;
 } Plug;
 
 static Plug *p = NULL;
 
+typedef struct {
+    Move_Scalar_Data move_scalar;
+} Move_And_Reset_Scalar_Data;
+
+bool move_and_reset_scalar_update(Move_And_Reset_Scalar_Data *data, Env env) {
+    if (wait_done(&data->move_scalar.wait)) return true;
+    bool done = move_scalar_update(&data->move_scalar, env);
+    if (done) *data->move_scalar.value = data->move_scalar.start;
+    return done;
+}
+
+Move_And_Reset_Scalar_Data move_and_reset_scalar(float *value, float target, float duration) {
+    return (Move_And_Reset_Scalar_Data) {
+        .move_scalar = move_scalar_data(value, target, duration)
+    };
+}
+
+Task task_move_and_reset_scalar(Arena *a, float *value, float target, float duration) {
+    Move_And_Reset_Scalar_Data data = move_and_reset_scalar(value, target, duration);
+    return (Task) {
+        .tag = p->TASK_MOVE_AND_RESET_SCALAR_TAG,
+        .data = arena_memdup(a, &data, sizeof(data))
+    };
+}
 
 typedef struct {
     Wait_Data wait;
@@ -154,9 +185,9 @@ typedef struct {
 
 bool task_intro_update(Intro_Data *data, Env env) {
     if (wait_done(&data->wait)) return true;
-    if (!data->wait.started) p->head.index = data->head;
+    if (!data->wait.started) p->scene.head.index = data->head;
     bool finished = wait_update(&data->wait, env);
-    p->scene_t = smoothstep(wait_interp(&data->wait));
+    p->scene.t = smoothstep(wait_interp(&data->wait));
     return finished;
 }
 
@@ -184,26 +215,74 @@ bool move_head_update(Move_Head_Data *data, Env env) {
     if (wait_done(&data->wait)) return true;
 
     if (wait_update(&data->wait, env)) {
-        p->head.offset = 0.0f;
-        p->head.index += data->dir;
+        p->scene.head.offset = 0.0f;
+        p->scene.head.index += data->dir;
         return true;
     }
 
-    p->head.offset = Lerp(0, data->dir, smoothstep(wait_interp(&data->wait)));
+    p->scene.head.offset = Lerp(0, data->dir, smoothstep(wait_interp(&data->wait)));
     return false;
 }
 
-Move_Head_Data move_head(Direction dir) {
+Move_Head_Data move_head(Direction dir, float duration) {
     return (Move_Head_Data) {
-        .wait = wait_data(HEAD_MOVING_DURATION),
+        .wait = wait_data(duration),
         .dir = dir,
     };
 }
 
-Task task_move_head(Arena *a, Direction dir) {
-    Move_Head_Data data = move_head(dir);
+Task task_move_head(Arena *a, Direction dir, float duration) {
+    Move_Head_Data data = move_head(dir, duration);
     return (Task) {
         .tag = p->TASK_MOVE_HEAD_TAG,
+        .data = arena_memdup(a, &data, sizeof(data)),
+    };
+}
+
+typedef struct {
+    Wait_Data wait;
+    Symbol write;
+    Cell *cell;
+} Write_Cell_Data;
+
+bool write_cell_update(Write_Cell_Data *data, Env env) {
+    if (wait_done(&data->wait)) return true;
+
+    if (!data->wait.started && data->cell) {
+        data->cell->symbol_b = data->write;
+        data->cell->t = 0.0;
+    }
+
+    float t1 = wait_interp(&data->wait);
+    bool finished = wait_update(&data->wait, env);
+    float t2 = wait_interp(&data->wait);
+
+    if (t1 < 0.5 && t2 >= 0.5) {
+        env.play_sound(p->write_sound, p->write_wave);
+    }
+
+    if (data->cell) data->cell->t = smoothstep(t2);
+
+    if (finished && data->cell) {
+        data->cell->symbol_a = data->cell->symbol_b;
+        data->cell->t = 0.0;
+    }
+
+    return finished;
+}
+
+Write_Cell_Data write_cell_data(Cell *cell, Symbol write) {
+    return (Write_Cell_Data) {
+        .wait = wait_data(HEAD_WRITING_DURATION),
+        .cell = cell,
+        .write = write,
+    };
+}
+
+Task task_write_cell(Arena *a, Cell *cell, Symbol write) {
+    Write_Cell_Data data = write_cell_data(cell, write);
+    return (Task) {
+        .tag = p->TASK_WRITE_CELL_TAG,
         .data = arena_memdup(a, &data, sizeof(data)),
     };
 }
@@ -217,8 +296,8 @@ bool write_head_update(Write_Head_Data *data, Env env) {
     if (wait_done(&data->wait)) return true;
 
     Cell *cell = NULL;
-    if ((size_t)p->head.index < p->tape.count) {
-        cell = &p->tape.items[(size_t)p->head.index];
+    if ((size_t)p->scene.head.index < p->scene.tape.count) {
+        cell = &p->scene.tape.items[(size_t)p->scene.head.index];
     }
 
     if (!data->wait.started && cell) {
@@ -244,15 +323,15 @@ bool write_head_update(Write_Head_Data *data, Env env) {
     return finished;
 }
 
-Write_Head_Data write_head_data(Symbol write) {
+Write_Head_Data write_head_data(Symbol write, float duration) {
     return (Write_Head_Data) {
-        .wait = wait_data(HEAD_WRITING_DURATION),
+        .wait = wait_data(duration),
         .write = write,
     };
 }
 
-Task task_write_head(Arena *a, Symbol write) {
-    Write_Head_Data data = write_head_data(write);
+Task task_write_head(Arena *a, Symbol write, float duration) {
+    Write_Head_Data data = write_head_data(write, duration);
     return (Task) {
         .tag = p->TASK_WRITE_HEAD_TAG,
         .data = arena_memdup(a, &data, sizeof(data)),
@@ -268,9 +347,9 @@ bool write_all_update(Write_All_Data *data, Env env) {
     if (wait_done(&data->wait)) return true;
 
     if (!data->wait.started) {
-        for (size_t i = 0; i < p->tape.count; ++i) {
-            p->tape.items[i].t = 0.0f;
-            p->tape.items[i].symbol_b = data->write;
+        for (size_t i = 0; i < p->scene.tape.count; ++i) {
+            p->scene.tape.items[i].t = 0.0f;
+            p->scene.tape.items[i].symbol_b = data->write;
         }
     }
 
@@ -282,14 +361,14 @@ bool write_all_update(Write_All_Data *data, Env env) {
         env.play_sound(p->write_sound, p->write_wave);
     }
 
-    for (size_t i = 0; i < p->tape.count; ++i) {
-        p->tape.items[i].t = smoothstep(t2);
+    for (size_t i = 0; i < p->scene.tape.count; ++i) {
+        p->scene.tape.items[i].t = smoothstep(t2);
     }
 
     if (finished) {
-        for (size_t i = 0; i < p->tape.count; ++i) {
-            p->tape.items[i].t = 0.0f;
-            p->tape.items[i].symbol_a = p->tape.items[i].symbol_b;
+        for (size_t i = 0; i < p->scene.tape.count; ++i) {
+            p->scene.tape.items[i].t = 0.0f;
+            p->scene.tape.items[i].symbol_a = p->scene.tape.items[i].symbol_b;
         }
     }
 
@@ -311,8 +390,8 @@ Task task_write_all(Arena *a, Symbol write) {
     };
 }
 
-static void table(Symbol state, Symbol read, Symbol write, Symbol step, Symbol next) {
-    Rule rule = {
+static Rule rule(Symbol state, Symbol read, Symbol write, Symbol step, Symbol next) {
+    return (Rule) {
         .symbols = {
             [RULE_STATE] = state,
             [RULE_READ] = read,
@@ -321,7 +400,6 @@ static void table(Symbol state, Symbol read, Symbol write, Symbol step, Symbol n
             [RULE_NEXT] = next,
         },
     };
-    nob_da_append(&p->table, rule);
 }
 
 static void load_assets(void) {
@@ -329,7 +407,7 @@ static void load_assets(void) {
     arena_reset(a);
 
     int arrows_count = 0;
-    int *arrows = LoadCodepoints("?abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:)→←", &arrows_count);
+    int *arrows = LoadCodepoints("?abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-@./:)→←", &arrows_count);
     p->font = LoadFontEx("./assets/fonts/iosevka-regular.ttf", FONT_SIZE, arrows, arrows_count);
     UnloadCodepoints(arrows);
     GenTextureMipmaps(&p->font.texture);
@@ -340,24 +418,9 @@ static void load_assets(void) {
         GenTextureMipmaps(&p->images[i]);
         SetTextureFilter(p->images[i], TEXTURE_FILTER_BILINEAR);
     }
+
     p->write_wave = LoadWave("./assets/sounds/plant-bomb.wav");
     p->write_sound = LoadSoundFromWave(p->write_wave);
-
-    // Table
-    {
-        table(
-            symbol_text(a, "Inc"),
-            symbol_text(a, "0"),
-            symbol_text(a, "1"),
-            symbol_text(a, "→"),
-            symbol_text(a, "Halt"));
-        table(
-            symbol_text(a, "Inc"),
-            symbol_text(a, "1"),
-            symbol_text(a, "0"),
-            symbol_text(a, "→"),
-            symbol_text(a, "Inc"));
-    }
 
     task_vtable_rebuild(a);
     p->TASK_INTRO_TAG = task_vtable_register(a, (Task_Funcs) {
@@ -372,6 +435,12 @@ static void load_assets(void) {
     p->TASK_WRITE_ALL_TAG = task_vtable_register(a, (Task_Funcs) {
         .update = (task_update_data_t)write_all_update,
     });
+    p->TASK_WRITE_CELL_TAG = task_vtable_register(a, (Task_Funcs) {
+        .update = (task_update_data_t)write_cell_update,
+    });
+    p->TASK_MOVE_AND_RESET_SCALAR_TAG = task_vtable_register(a, (Task_Funcs) {
+        .update = (task_update_data_t)move_and_reset_scalar_update,
+    });
 }
 
 static void unload_assets(void) {
@@ -381,80 +450,127 @@ static void unload_assets(void) {
     for (size_t i = 0; i < COUNT_IMAGES; ++i) {
         UnloadTexture(p->images[i]);
     }
-    p->table.count = 0;
 }
 
 static Task task_outro(Arena *a, float duration) {
     return task_group(a,
-        task_move_scalar(a, &p->scene_t, 0.0, duration),
-        task_move_scalar(a, &p->tape_y_offset, 0.0, duration),
-        task_move_scalar(a, &p->table_lines_t, 0.0, duration),
-        task_move_scalar(a, &p->table_symbols_t, 0.0, duration),
-        task_move_scalar(a, &p->table_head_t, 0.0, duration),
-        task_move_scalar(a, &p->head.state_t, 0.0, duration));
+        task_move_scalar(a, &p->scene.t, 0.0, duration),
+        task_move_scalar(a, &p->scene.tape_y_offset, 0.0, duration),
+        task_move_scalar(a, &p->scene.table.lines_t, 0.0, duration),
+        task_move_scalar(a, &p->scene.table.symbols_t, 0.0, duration),
+        task_move_scalar(a, &p->scene.table.head_t, 0.0, duration),
+        task_move_scalar(a, &p->scene.head.state_t, 0.0, duration));
+}
+
+static Task task_fun(Arena *a) {
+    return task_seq(a,
+        task_write_head(a, symbol_text(a, "1"), HEAD_WRITING_DURATION),
+        task_move_head(a, DIR_RIGHT, HEAD_MOVING_DURATION),
+        task_write_head(a, symbol_text(a, "2"), HEAD_WRITING_DURATION),
+        task_move_head(a, DIR_RIGHT, HEAD_MOVING_DURATION),
+        task_write_head(a, symbol_text(a, "69"), HEAD_WRITING_DURATION),
+        task_move_head(a, DIR_RIGHT, HEAD_MOVING_DURATION),
+        task_write_head(a, symbol_text(a, "420"), HEAD_WRITING_DURATION),
+        task_move_head(a, DIR_RIGHT, HEAD_MOVING_DURATION),
+        task_write_head(a, symbol_text(a, ":)"), HEAD_WRITING_DURATION),
+        task_move_head(a, DIR_RIGHT, HEAD_MOVING_DURATION),
+        task_write_head(a, symbol_image(IMAGE_JOY), HEAD_WRITING_DURATION),
+        task_move_head(a, DIR_RIGHT, HEAD_MOVING_DURATION),
+        task_write_head(a, symbol_image(IMAGE_FIRE), HEAD_WRITING_DURATION),
+        task_move_head(a, DIR_RIGHT, HEAD_MOVING_DURATION),
+        task_write_head(a, symbol_image(IMAGE_OK), HEAD_WRITING_DURATION),
+        task_move_head(a, DIR_RIGHT, HEAD_MOVING_DURATION),
+        task_write_head(a, symbol_image(IMAGE_100), HEAD_WRITING_DURATION),
+        task_move_head(a, DIR_RIGHT, HEAD_MOVING_DURATION),
+        task_write_head(a, symbol_image(IMAGE_EGGPLANT), HEAD_WRITING_DURATION),
+        task_write_all(a, symbol_text(a, "0")),
+        task_write_all(a, symbol_text(a, "69")),
+        task_write_all(a, symbol_image(IMAGE_EGGPLANT)),
+        task_write_all(a, symbol_text(a, "0")));
 }
 
 void plug_reset(void)
 {
     Arena *a = &p->arena_state;
     arena_reset(a);
+    memset(&p->scene, 0, sizeof(p->scene));
 
-    p->head.index = 0;
-    p->head.offset = 0;
-    p->head.state_t = 0;
-    p->tape.count = 0;
-    Symbol zero = symbol_text(a, "0");
-    for (size_t i = 0; i < TAPE_SIZE; ++i) {
-        Cell cell = {.symbol_a = zero,};
-        nob_da_append(&p->tape, cell);
+    // Table
+    {
+        arena_da_append(a, &p->scene.table, rule(
+            symbol_text(a, "Inc"),
+            symbol_text(a, "0"),
+            symbol_text(a, "1"),
+            symbol_text(a, "→"),
+            symbol_text(a, "Halt")));
+        arena_da_append(a, &p->scene.table, rule(
+            symbol_text(a, "Inc"),
+            symbol_text(a, "1"),
+            symbol_text(a, "0"),
+            symbol_text(a, "→"),
+            symbol_text(a, "Inc")));
     }
 
-    p->scene_t = 0;
-    p->tape_y_offset = 0.0f;
-    p->table_lines_t = 0;
-    p->table_symbols_t = 0;
-    p->table_head_t = 0;
+    Symbol zero = symbol_text(a, "0");
+    Symbol one = symbol_text(a, "1");
+    Symbol nothing = symbol_text(a, " ");
+    for (size_t i = 0; i < START_AT_CELL_INDEX; ++i) {
+        Cell cell = {.symbol_a = nothing,};
+        nob_da_append(&p->scene.tape, cell);
+    }
+    for (size_t i = START_AT_CELL_INDEX; i < START_AT_CELL_INDEX + 3; ++i) {
+        Cell cell = {.symbol_a = one,};
+        nob_da_append(&p->scene.tape, cell);
+    }
+    for (size_t i = START_AT_CELL_INDEX + 3; i < TAPE_SIZE; ++i) {
+        Cell cell = {.symbol_a = zero,};
+        nob_da_append(&p->scene.tape, cell);
+    }
 
-    p->task = task_seq(a,
+    p->scene.head.state.symbol_a = symbol_text(a, "Inc");
+    p->scene.table.head_offset_t = 1.0f;
+
+    p->scene.task = task_seq(a,
         task_intro(a, START_AT_CELL_INDEX),
         task_wait(a, 0.75),
-        task_move_scalar(a, &p->tape_y_offset, -250.0, 0.5),
+        task_move_scalar(a, &p->scene.tape_y_offset, -250.0, 0.5),
         task_wait(a, 0.75),
 
         task_seq(a,
-            task_move_scalar(a, &p->table_lines_t, 1.0, 0.5),
-            task_move_scalar(a, &p->table_symbols_t, 1.0, 0.5),
-            task_move_scalar(a, &p->head.state_t, 1.0, 0.5),
-            task_move_scalar(a, &p->table_head_t, 1.0, 0.5)),
+            task_move_scalar(a, &p->scene.table.lines_t, 1.0, 0.5),
+            task_move_scalar(a, &p->scene.table.symbols_t, 1.0, 0.5),
+            task_move_scalar(a, &p->scene.head.state_t, 1.0, 0.5),
+            task_move_scalar(a, &p->scene.table.head_t, 1.0, 0.5)),
 
-        task_wait(a, 0.75),
-        task_write_head(a, symbol_text(a, "1")),
-        task_move_head(a, DIR_RIGHT),
-        task_write_head(a, symbol_text(a, "2")),
-        task_move_head(a, DIR_RIGHT),
-        task_write_head(a, symbol_text(a, "69")),
-        task_move_head(a, DIR_RIGHT),
-        task_write_head(a, symbol_text(a, "420")),
-        task_move_head(a, DIR_RIGHT),
-        task_write_head(a, symbol_text(a, ":)")),
-        task_move_head(a, DIR_RIGHT),
-        task_write_head(a, symbol_image(IMAGE_JOY)),
-        task_move_head(a, DIR_RIGHT),
-        task_write_head(a, symbol_image(IMAGE_FIRE)),
-        task_move_head(a, DIR_RIGHT),
-        task_write_head(a, symbol_image(IMAGE_OK)),
-        task_move_head(a, DIR_RIGHT),
-        task_write_head(a, symbol_image(IMAGE_100)),
-        task_move_head(a, DIR_RIGHT),
-        task_write_head(a, symbol_image(IMAGE_EGGPLANT)),
-        task_write_all(a, symbol_text(a, "0")),
-        task_write_all(a, symbol_text(a, "69")),
-        task_write_all(a, symbol_image(IMAGE_EGGPLANT)),
-        task_write_all(a, symbol_text(a, "0")),
         task_wait(a, 0.5),
+        task_group(a,
+            task_write_head(a, zero, HEAD_WRITING_DURATION)),
+        task_group(a,
+            task_move_head(a, DIR_RIGHT, HEAD_MOVING_DURATION)),
+        task_group(a,
+            task_write_head(a, zero, HEAD_WRITING_DURATION)),
+        task_group(a,
+            task_move_head(a, DIR_RIGHT, HEAD_MOVING_DURATION)),
+        task_group(a,
+            task_write_head(a, zero, HEAD_WRITING_DURATION)),
+        task_group(a,
+            task_move_head(a, DIR_RIGHT, HEAD_MOVING_DURATION)),
+
+        task_group(a,
+            task_move_scalar(a, &p->scene.table.head_offset_t, 0.0, HEAD_WRITING_DURATION)),
+
+        task_group(a,
+            task_write_head(a, one, HEAD_WRITING_DURATION)),
+        task_group(a,
+            task_move_head(a, DIR_RIGHT, HEAD_MOVING_DURATION)),
+        task_group(a,
+            task_write_cell(a, &p->scene.head.state, symbol_text(a, "Halt"))),
+
+        // task_fun(a),
+        task_wait(a, 2.0),
         task_outro(a, INTRO_DURATION),
-        task_wait(a, 0.5));
-    p->finished = false;
+        task_wait(a, 0.5)
+        );
 }
 
 void plug_init(void) {
@@ -503,6 +619,7 @@ static void image_in_rec(Rectangle rec, Texture2D image, float size, Color color
     Vector2 rec_size = { rec.width, rec.height };
     Vector2 image_size = { size, size };
     Vector2 position = { rec.x, rec.y };
+
     position = Vector2Add(position, Vector2Scale(rec_size, 0.5));
     position = Vector2Subtract(position, Vector2Scale(image_size, 0.5));
 
@@ -527,8 +644,8 @@ static void interp_symbol_in_rec(Rectangle rec, Symbol from_symbol, Symbol to_sy
     symbol_in_rec(rec, to_symbol, size*t, ColorAlpha(color, t));
 }
 
-static void cell_in_rec(Rectangle rec, Cell cell, Color color) {
-    interp_symbol_in_rec(rec, cell.symbol_a, cell.symbol_b, FONT_SIZE, cell.t, color);
+static void cell_in_rec(Rectangle rec, Cell cell, float size, Color color) {
+    interp_symbol_in_rec(rec, cell.symbol_a, cell.symbol_b, size, cell.t, color);
 }
 
 static void render_table_lines(float x, float y, float field_width, float field_height, size_t table_columns, size_t table_rows, float t, float thick, Color color) {
@@ -581,7 +698,7 @@ void plug_update(Env env) {
     position = Vector2Subtract(position, Vector2Scale(text_size, 0.5));
     DrawTextEx(p->font, text, position, header_font_size, 0, WHITE);
     
-    p->finished = task_update(p->task, env);
+    p->scene.finished = task_update(p->scene.task, env);
 
     float head_thick = 20.0;
     float head_padding = head_thick*2.5;
@@ -589,25 +706,27 @@ void plug_update(Env env) {
         .width = CELL_WIDTH + head_padding,
         .height = CELL_HEIGHT + head_padding,
     };
-    float t = ((float)p->head.index + p->head.offset);
-    head_rec.x = CELL_WIDTH/2 - head_rec.width/2 + Lerp(-20.0, t, p->scene_t)*(CELL_WIDTH + CELL_PAD);
+    float t = ((float)p->scene.head.index + p->scene.head.offset);
+    head_rec.x = CELL_WIDTH/2 - head_rec.width/2 + Lerp(-20.0, t, p->scene.t)*(CELL_WIDTH + CELL_PAD);
     head_rec.y = CELL_HEIGHT/2 - head_rec.height/2;
     Camera2D camera = {
         .target = {
             .x = head_rec.x + head_rec.width/2,
-            .y = head_rec.y + head_rec.height/2 - p->tape_y_offset,
+            .y = head_rec.y + head_rec.height/2 - p->scene.tape_y_offset,
         },
-        .zoom = Lerp(0.5, 1.0, p->scene_t),
+        .zoom = Lerp(0.5, 1.0, p->scene.t),
         .offset = {
             .x = env.screen_width/2,
             .y = env.screen_height/2,
         },
     };
-    BeginMode2D(camera);
 
+    // Scene
+    BeginMode2D(camera);
+    {
         // Tape
         {
-            for (size_t i = 0; i < p->tape.count; ++i) {
+            for (size_t i = 0; i < p->scene.tape.count; ++i) {
                 Rectangle rec = {
                     .x = i*(CELL_WIDTH + CELL_PAD),
                     .y = 0,
@@ -615,7 +734,7 @@ void plug_update(Env env) {
                     .height = CELL_HEIGHT,
                 };
                 DrawRectangleRec(rec, CELL_COLOR);
-                cell_in_rec(rec, p->tape.items[i], BACKGROUND_COLOR);
+                cell_in_rec(rec, p->scene.tape.items[i], FONT_SIZE, BACKGROUND_COLOR);
             }
         }
 
@@ -626,14 +745,21 @@ void plug_update(Env env) {
                 .height = head_rec.height*0.5,
             };
             state_rec.x = head_rec.x,
-            state_rec.y = head_rec.y + head_rec.height - state_rec.height*(1 - p->head.state_t),
+            state_rec.y = head_rec.y + head_rec.height - state_rec.height*(1 - p->scene.head.state_t),
             // DrawRectangleLinesEx(state_rec, 10, RED);
-            symbol_in_rec(state_rec, (Symbol){.kind = SYMBOL_TEXT, .text = "Inc"}, FONT_SIZE*0.75, ColorAlpha(CELL_COLOR, p->head.state_t));
+            cell_in_rec(state_rec, p->scene.head.state, FONT_SIZE*0.75*p->scene.head.state_t, ColorAlpha(CELL_COLOR, p->scene.head.state_t));
             float h = head_rec.height;
             if (state_rec.y + state_rec.height > head_rec.y + head_rec.height) {
                 h += state_rec.y + state_rec.height - (head_rec.y + head_rec.height);
             }
-            render_table_lines(head_rec.x, head_rec.y, head_rec.width, h, 1, 1, p->scene_t, head_thick, HEAD_COLOR);
+            render_table_lines(head_rec.x, head_rec.y, head_rec.width, h, 1, 1, p->scene.t, head_thick, HEAD_COLOR);
+            Rectangle watermark = {
+                .width = state_rec.width,
+                .height = FONT_SIZE*0.5,
+            };
+            watermark.x = state_rec.x,
+            watermark.y = state_rec.y + state_rec.height;
+            text_in_rec(watermark, "x.com/realsanjeev2", FONT_SIZE*0.25, ColorAlpha(CELL_COLOR, p->scene.t*0.5));
         }
 
         // Table
@@ -646,7 +772,7 @@ void plug_update(Env env) {
             float x = head_rec.x + head_rec.width/2 - (field_width*COUNT_RULE_SYMBOLS + right_margin)/2;
             float y = head_rec.y + head_rec.height + top_margin;
 
-            for (size_t i = 0; i < p->table.count; ++i) {
+            for (size_t i = 0; i < p->scene.table.count; ++i) {
                 for (size_t j = 0; j < 2; ++j) {
                     Rectangle rec = {
                         .x = x + j*field_width,
@@ -655,7 +781,7 @@ void plug_update(Env env) {
                         .height = field_height,
                     };
                     // DrawRectangleLinesEx(rec, 10, RED);
-                    symbol_in_rec(rec, p->table.items[i].symbols[j], symbol_size*p->table_symbols_t, ColorAlpha(CELL_COLOR, p->table_symbols_t));
+                    symbol_in_rec(rec, p->scene.table.items[i].symbols[j], symbol_size*p->scene.table.symbols_t, ColorAlpha(CELL_COLOR, p->scene.table.symbols_t));
                 }
 
                 for (size_t j = 2; j < COUNT_RULE_SYMBOLS; ++j) {
@@ -665,21 +791,28 @@ void plug_update(Env env) {
                         .width = field_width,
                         .height = field_height,
                     };
-                    symbol_in_rec(rec, p->table.items[i].symbols[j], symbol_size*p->table_symbols_t, ColorAlpha(CELL_COLOR, p->table_symbols_t));
+                    symbol_in_rec(rec, p->scene.table.items[i].symbols[j], symbol_size*p->scene.table.symbols_t, ColorAlpha(CELL_COLOR, p->scene.table.symbols_t));
                 }
             }
 
-            render_table_lines(x, y, field_width, field_height, 2, p->table.count, p->table_lines_t, 7.0f, CELL_COLOR);
+            render_table_lines(x, y, field_width, field_height, 2, p->scene.table.count, p->scene.table.lines_t, 7.0f, CELL_COLOR);
 
-            render_table_lines(x + 2*field_width + right_margin, y, field_width, field_height, 3, p->table.count, p->table_lines_t, 7.0f, CELL_COLOR);
+            render_table_lines(x + 2*field_width + right_margin, y, field_width, field_height, 3, p->scene.table.count, p->scene.table.lines_t, 7.0f, CELL_COLOR);
 
-            render_table_lines(x - head_padding/2, y - head_padding/2, 2*field_width + head_padding, field_height + head_padding, 1, 1, p->table_head_t, head_thick, HEAD_COLOR);
+            render_table_lines(
+                x - head_padding/2,
+                y - head_padding/2 + p->scene.table.head_offset_t*field_height,
+                2*field_width + head_padding,
+                field_height + head_padding,
+                1, 1,
+                p->scene.table.head_t, head_thick, HEAD_COLOR);
         }
+    }
     EndMode2D();
 }
 
 bool plug_finished(void) {
-    return p->finished;
+    return p->scene.finished;
 }
 
 #define ARENA_IMPLEMENTATION
