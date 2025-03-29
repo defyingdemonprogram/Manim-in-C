@@ -43,6 +43,15 @@ typedef enum {
     COUNT_IMAGES,
 } Image_Index;
 
+static_assert(COUNT_IMAGES == 5, "Amount of images is updated");
+static const char *image_file_paths[COUNT_IMAGES] = {
+    [IMAGE_EGGPLANT] = "./assets/images/eggplant.png",
+    [IMAGE_100] = "./assets/images/100.png",
+    [IMAGE_FIRE] = "./assets/images/fire.png",
+    [IMAGE_JOY] = "./assets/images/joy.png",
+    [IMAGE_OK] = "./assets/images/ok.png",
+};
+
 typedef enum {
     SYMBOL_TEXT,
     SYMBOL_IMAGE,
@@ -102,7 +111,9 @@ typedef struct {
 typedef struct {
     int index;
     float offset;
+
     Cell state;
+    float state_t;
 } Head;
 
 typedef struct {
@@ -116,6 +127,7 @@ typedef struct {
     float tape_y_offset;
     float table_lines_t;
     float table_symbols_t;
+    float table_head_t;
     Task task;
     bool finished;
 
@@ -317,17 +329,14 @@ static void load_assets(void) {
     arena_reset(a);
 
     int arrows_count = 0;
-    int *arrows = LoadCodepoints("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:)→←", &arrows_count);
+    int *arrows = LoadCodepoints("?abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:)→←", &arrows_count);
     p->font = LoadFontEx("./assets/fonts/iosevka-regular.ttf", FONT_SIZE, arrows, arrows_count);
     UnloadCodepoints(arrows);
     GenTextureMipmaps(&p->font.texture);
     SetTextureFilter(p->font.texture, TEXTURE_FILTER_BILINEAR);
-    p->images[IMAGE_EGGPLANT] = LoadTexture("./assets/images/eggplant.png");
-    p->images[IMAGE_100] = LoadTexture("./assets/images/100.png");
-    p->images[IMAGE_FIRE] = LoadTexture("./assets/images/fire.png");
-    p->images[IMAGE_JOY] = LoadTexture("./assets/images/joy.png");
-    p->images[IMAGE_OK] = LoadTexture("./assets/images/ok.png");
+
     for (size_t i = 0; i < COUNT_IMAGES; ++i) {
+        p->images[i] = LoadTexture(image_file_paths[i]);
         GenTextureMipmaps(&p->images[i]);
         SetTextureFilter(p->images[i], TEXTURE_FILTER_BILINEAR);
     }
@@ -380,7 +389,9 @@ static Task task_outro(Arena *a, float duration) {
         task_move_scalar(a, &p->scene_t, 0.0, duration),
         task_move_scalar(a, &p->tape_y_offset, 0.0, duration),
         task_move_scalar(a, &p->table_lines_t, 0.0, duration),
-        task_move_scalar(a, &p->table_symbols_t, 0.0, duration));
+        task_move_scalar(a, &p->table_symbols_t, 0.0, duration),
+        task_move_scalar(a, &p->table_head_t, 0.0, duration),
+        task_move_scalar(a, &p->head.state_t, 0.0, duration));
 }
 
 void plug_reset(void)
@@ -390,6 +401,7 @@ void plug_reset(void)
 
     p->head.index = 0;
     p->head.offset = 0;
+    p->head.state_t = 0;
     p->tape.count = 0;
     Symbol zero = symbol_text(a, "0");
     for (size_t i = 0; i < TAPE_SIZE; ++i) {
@@ -401,14 +413,19 @@ void plug_reset(void)
     p->tape_y_offset = 0.0f;
     p->table_lines_t = 0;
     p->table_symbols_t = 0;
+    p->table_head_t = 0;
 
     p->task = task_seq(a,
         task_intro(a, START_AT_CELL_INDEX),
         task_wait(a, 0.75),
         task_move_scalar(a, &p->tape_y_offset, -250.0, 0.5),
         task_wait(a, 0.75),
-        task_move_scalar(a, &p->table_lines_t, 1.0, 0.5),
-        task_move_scalar(a, &p->table_symbols_t, 1.0, 0.5),
+
+        task_seq(a,
+            task_move_scalar(a, &p->table_lines_t, 1.0, 0.5),
+            task_move_scalar(a, &p->table_symbols_t, 1.0, 0.5),
+            task_move_scalar(a, &p->head.state_t, 1.0, 0.5),
+            task_move_scalar(a, &p->table_head_t, 1.0, 0.5)),
 
         task_wait(a, 0.75),
         task_write_head(a, symbol_text(a, "1")),
@@ -510,23 +527,67 @@ static void interp_symbol_in_rec(Rectangle rec, Symbol from_symbol, Symbol to_sy
     symbol_in_rec(rec, to_symbol, size*t, ColorAlpha(color, t));
 }
 
+static void cell_in_rec(Rectangle rec, Cell cell, Color color) {
+    interp_symbol_in_rec(rec, cell.symbol_a, cell.symbol_b, FONT_SIZE, cell.t, color);
+}
+
+static void render_table_lines(float x, float y, float field_width, float field_height, size_t table_columns, size_t table_rows, float t, float thick, Color color) {
+    thick *= t;
+    for (size_t i = 0; i < table_rows + 1; ++i) {
+        Vector2 start_pos = {
+            .x = x - thick/2,
+            .y = y + i*field_height,
+        };
+        Vector2 end_pos = {
+            .x = x + field_width*table_columns + thick/2,
+            .y = y + i*field_height,
+        };
+        if (i >= table_rows) {
+            Vector2 t = start_pos;
+            start_pos = end_pos;
+            end_pos = t;
+        }
+        end_pos = Vector2Lerp(start_pos, end_pos, t);
+        DrawLineEx(start_pos, end_pos, thick, color);
+    }
+
+    for (size_t i = 0; i < table_columns + 1; ++i) {
+        Vector2 start_pos = {
+            .x = x + i*field_width,
+            .y = y,
+        };
+        Vector2 end_pos = {
+            .x = x + i*field_width,
+            .y = y + field_height*table_rows,
+        };
+        if (i > 0) {
+            Vector2 t = start_pos;
+            start_pos = end_pos;
+            end_pos = t;
+        }
+        end_pos = Vector2Lerp(start_pos, end_pos, t);
+        DrawLineEx(start_pos, end_pos, thick, color);
+    }
+}
+
 void plug_update(Env env) {
     ClearBackground(BACKGROUND_COLOR);
 
-    const float header_font_size = FONT_SIZE*0.65f;
+    const float header_font_size = FONT_SIZE*0.45f;
     const char *text = "Turing Machine";
     Vector2 text_size = MeasureTextEx(p->font, text, header_font_size, 0);
 
-    Vector2 position = {env.screen_width/2, FONT_SIZE - header_font_size};
+    Vector2 position = {env.screen_width/2, header_font_size};
     position = Vector2Subtract(position, Vector2Scale(text_size, 0.5));
     DrawTextEx(p->font, text, position, header_font_size, 0, WHITE);
     
     p->finished = task_update(p->task, env);
 
     float head_thick = 20.0;
+    float head_padding = head_thick*2.5;
     Rectangle head_rec = {
-        .width = CELL_WIDTH + head_thick*3 + (1 - p->scene_t)*head_thick*3,
-        .height = CELL_HEIGHT + head_thick*3 + (1 - p->scene_t)*head_thick*3,
+        .width = CELL_WIDTH + head_padding,
+        .height = CELL_HEIGHT + head_padding,
     };
     float t = ((float)p->head.index + p->head.offset);
     head_rec.x = CELL_WIDTH/2 - head_rec.width/2 + Lerp(-20.0, t, p->scene_t)*(CELL_WIDTH + CELL_PAD);
@@ -554,124 +615,65 @@ void plug_update(Env env) {
                     .height = CELL_HEIGHT,
                 };
                 DrawRectangleRec(rec, CELL_COLOR);
-
-                interp_symbol_in_rec(rec, p->tape.items[i].symbol_a, p->tape.items[i].symbol_b, FONT_SIZE, p->tape.items[i].t, BACKGROUND_COLOR);
+                cell_in_rec(rec, p->tape.items[i], BACKGROUND_COLOR);
             }
         }
 
         // Head
         {
-            Vector2 head_lines[][2] = {
-                {
-                    {
-                        head_rec.x,
-                        head_rec.y + head_thick*p->scene_t/2
-                    },
-                    {
-                        head_rec.x + head_rec.width,
-                        head_rec.y + head_thick*p->scene_t/2
-                    },
-                },
-                {
-                    {
-                        head_rec.x + head_rec.width,
-                        head_rec.y + head_rec.height - head_thick*p->scene_t/2
-                    },
-                    {
-                        head_rec.x,
-                        head_rec.y + head_rec.height - head_thick*p->scene_t/2
-                    },
-                },
-                {
-                    {
-                        head_rec.x + head_thick*p->scene_t/2,
-                        head_rec.y,
-                    },
-                    {
-                        head_rec.x + head_thick*p->scene_t/2,
-                        head_rec.y + head_rec.height,
-                    },
-                },
-                {
-                    {
-                        head_rec.x + head_rec.width - head_thick*p->scene_t/2,
-                        head_rec.y + head_rec.height,
-                    },
-                    {
-                        head_rec.x + head_rec.width - head_thick*p->scene_t/2,
-                        head_rec.y,
-                    },
-                },
+            Rectangle state_rec = {
+                .width = head_rec.width,
+                .height = head_rec.height*0.5,
             };
-
-            for (size_t i = 0; i < NOB_ARRAY_LEN(head_lines); ++i) {
-                Vector2 start_pos = head_lines[i][0];
-                Vector2 end_pos   = head_lines[i][1];
-                end_pos = Vector2Lerp(start_pos, end_pos, p->scene_t);
-                DrawLineEx(start_pos, end_pos, head_thick*p->scene_t, HEAD_COLOR);
+            state_rec.x = head_rec.x,
+            state_rec.y = head_rec.y + head_rec.height - state_rec.height*(1 - p->head.state_t),
+            // DrawRectangleLinesEx(state_rec, 10, RED);
+            symbol_in_rec(state_rec, (Symbol){.kind = SYMBOL_TEXT, .text = "Inc"}, FONT_SIZE*0.75, ColorAlpha(CELL_COLOR, p->head.state_t));
+            float h = head_rec.height;
+            if (state_rec.y + state_rec.height > head_rec.y + head_rec.height) {
+                h += state_rec.y + state_rec.height - (head_rec.y + head_rec.height);
             }
+            render_table_lines(head_rec.x, head_rec.y, head_rec.width, h, 1, 1, p->scene_t, head_thick, HEAD_COLOR);
         }
 
         // Table
         {
-            float margin = 180.0;
-            float padding = CELL_PAD*0.5;
+            float top_margin = 250.0;
+            float right_margin = 70.0;
             float symbol_size = FONT_SIZE*0.75;
-            float field_width = 20.0f*9;
-            float field_height = 15.0f*9;
-            float x = head_rec.x + head_rec.width/2 - ((field_width + padding)*COUNT_RULE_SYMBOLS - padding)/2;
-            float y = head_rec.y + head_rec.height + margin;
+            float field_width = 20.0f*9 + CELL_PAD*0.5;
+            float field_height = 15.0f*9 + CELL_PAD*0.5;
+            float x = head_rec.x + head_rec.width/2 - (field_width*COUNT_RULE_SYMBOLS + right_margin)/2;
+            float y = head_rec.y + head_rec.height + top_margin;
 
             for (size_t i = 0; i < p->table.count; ++i) {
-                for (size_t j = 0; j < COUNT_RULE_SYMBOLS; ++j) {
+                for (size_t j = 0; j < 2; ++j) {
                     Rectangle rec = {
-                        .x = x + j*(field_width + padding),
-                        .y = y + i*(field_height + padding),
+                        .x = x + j*field_width,
+                        .y = y + i*field_height,
                         .width = field_width,
                         .height = field_height,
                     };
                     // DrawRectangleLinesEx(rec, 10, RED);
                     symbol_in_rec(rec, p->table.items[i].symbols[j], symbol_size*p->table_symbols_t, ColorAlpha(CELL_COLOR, p->table_symbols_t));
                 }
+
+                for (size_t j = 2; j < COUNT_RULE_SYMBOLS; ++j) {
+                    Rectangle rec = {
+                        .x = x + j*field_width + right_margin,
+                        .y = y + i*field_height,
+                        .width = field_width,
+                        .height = field_height,
+                    };
+                    symbol_in_rec(rec, p->table.items[i].symbols[j], symbol_size*p->table_symbols_t, ColorAlpha(CELL_COLOR, p->table_symbols_t));
+                }
             }
 
-            float thick = 7.0*p->table_lines_t;
-            Color color = ColorAlpha(CELL_COLOR, p->table_lines_t);
-            for (size_t i = 0; i < p->table.count + 1; ++i) {
-                Vector2 startPos = {
-                    .x = x - thick/2 - padding/2,
-                    .y = y + i*(field_height + padding) - padding/2,
-                };
-                Vector2 endPos = {
-                    .x = x + (field_width + padding)*COUNT_RULE_SYMBOLS + thick/2 - padding/2,
-                    .y = y + i*(field_height + padding) - padding/2,
-                };
-                if (i >= p->table.count) {
-                    Vector2 t = startPos;
-                    startPos = endPos;
-                    endPos = t;
-                }
-                endPos = Vector2Lerp(startPos, endPos, p->table_lines_t);
-                DrawLineEx(startPos, endPos, thick, color);
-            }
+            render_table_lines(x, y, field_width, field_height, 2, p->table.count, p->table_lines_t, 7.0f, CELL_COLOR);
 
-            for (size_t i = 0; i < COUNT_RULE_SYMBOLS + 1; ++i) {
-                Vector2 startPos = {
-                    .x = x + i*(field_width + padding) - padding/2,
-                    .y = y - padding/2,
-                };
-                Vector2 endPos = {
-                    .x = x + i*(field_width + padding) - padding/2,
-                    .y = y + (field_height + padding)*p->table.count - padding/2,
-                };
-                if (i >= COUNT_RULE_SYMBOLS) {
-                    Vector2 t = startPos;
-                    startPos = endPos;
-                    endPos = t;
-                }
-                endPos = Vector2Lerp(startPos, endPos, p->table_lines_t);
-                DrawLineEx(startPos, endPos, thick, color);
-            }
+            render_table_lines(x + 2*field_width + right_margin, y, field_width, field_height, 3, p->table.count, p->table_lines_t, 7.0f, CELL_COLOR);
+
+            render_table_lines(x - head_padding/2, y - head_padding/2, 2*field_width + head_padding, field_height + head_padding, 1, 1, p->table_head_t, head_thick, HEAD_COLOR);
         }
     EndMode2D();
 }
