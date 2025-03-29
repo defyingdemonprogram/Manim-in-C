@@ -34,20 +34,6 @@ typedef enum {
     DIR_RIGHT = 1,
 } Direction;
 
-typedef struct {
-    const char *state;
-    const char *read;
-    const char *write;
-    Direction step;
-    const char *next;
-} Rule;
-
-typedef struct {
-    Rule *items;
-    size_t count;
-    size_t capacity;
-} Table;
-
 typedef enum {
     IMAGE_EGGPLANT,
     IMAGE_100,
@@ -82,6 +68,25 @@ Symbol symbol_image(Image_Index image_index) {
     };
 }
 
+typedef enum {
+    RULE_STATE = 0,
+    RULE_READ,
+    RULE_WRITE,
+    RULE_STEP,
+    RULE_NEXT,
+    COUNT_RULE_SYMBOLS,
+} Rule_Symbol;
+
+typedef struct {
+    Symbol symbols[COUNT_RULE_SYMBOLS];
+} Rule;
+
+typedef struct {
+    Rule *items;
+    size_t count;
+    size_t capacity;
+} Table;
+
 typedef struct {
     Symbol symbol_a;
     Symbol symbol_b;
@@ -108,6 +113,7 @@ typedef struct {
     Tape tape;
     float scene_t;
     float tape_y_offset;
+    float table_t;
     Task task;
     bool finished;
 
@@ -118,14 +124,14 @@ typedef struct {
     Sound write_sound;
     Wave write_wave;
     Texture2D images[COUNT_IMAGES];
+    Tag TASK_INTRO_TAG;
+    Tag TASK_MOVE_HEAD_TAG;
+    Tag TASK_WRITE_HEAD_TAG;
+    Tag TASK_WRITE_ALL_TAG;
 } Plug;
 
 static Plug *p = NULL;
 
-static Tag TASK_INTRO_TAG = 0;
-static Tag TASK_MOVE_HEAD_TAG = 0;
-static Tag TASK_WRITE_HEAD_TAG = 0;
-static Tag TASK_WRITE_ALL_TAG = 0;
 
 typedef struct {
     Wait_Data wait;
@@ -150,7 +156,7 @@ Intro_Data intro_data(size_t head) {
 Task task_intro(Arena *a, size_t head) {
     Intro_Data data = intro_data(head);
     return (Task) {
-        .tag = TASK_INTRO_TAG,
+        .tag = p->TASK_INTRO_TAG,
         .data = arena_memdup(a, &data, sizeof(data)),
     };
 }
@@ -183,7 +189,7 @@ Move_Head_Data move_head(Direction dir) {
 Task task_move_head(Arena *a, Direction dir) {
     Move_Head_Data data = move_head(dir);
     return (Task) {
-        .tag = TASK_MOVE_HEAD_TAG,
+        .tag = p->TASK_MOVE_HEAD_TAG,
         .data = arena_memdup(a, &data, sizeof(data)),
     };
 }
@@ -234,7 +240,7 @@ Write_Head_Data write_head_data(Symbol write) {
 Task task_write_head(Arena *a, Symbol write) {
     Write_Head_Data data = write_head_data(write);
     return (Task) {
-        .tag = TASK_WRITE_HEAD_TAG,
+        .tag = p->TASK_WRITE_HEAD_TAG,
         .data = arena_memdup(a, &data, sizeof(data)),
     };
 }
@@ -286,23 +292,28 @@ Write_All_Data write_all_data(Symbol write) {
 Task task_write_all(Arena *a, Symbol write) {
     Write_All_Data data = write_all_data(write);
     return (Task) {
-        .tag = TASK_WRITE_ALL_TAG,
+        .tag = p->TASK_WRITE_ALL_TAG,
         .data = arena_memdup(a, &data, sizeof(data)),
     };
 }
 
-static void table(const char *state, const char *read, const char *write, Direction step, const char *next) {
+static void table(Symbol state, Symbol read, Symbol write, Symbol step, Symbol next) {
     Rule rule = {
-        .state = state,
-        .read = read,
-        .write = write,
-        .step = step,
-        .next = next,
+        .symbols = {
+            [RULE_STATE] = state,
+            [RULE_READ] = read,
+            [RULE_WRITE] = write,
+            [RULE_STEP] = step,
+            [RULE_NEXT] = next,
+        }
     };
     nob_da_append(&p->table, rule);
 }
 
 static void load_assets(void) {
+    Arena *a = &p->arena_assets;
+    arena_reset(a);
+
     p->font = LoadFontEx("./assets/fonts/iosevka-regular.ttf", FONT_SIZE, NULL, 0);
     GenTextureMipmaps(&p->font.texture);
     SetTextureFilter(p->font.texture, TEXTURE_FILTER_BILINEAR);
@@ -320,23 +331,31 @@ static void load_assets(void) {
 
     // Table
     {
-        table("Inc", "0", "1", DIR_RIGHT, "Halt");
-        table("Inc", "1", "0", DIR_LEFT,  "Inc");
+        table(
+            symbol_text(a, "Inc"),
+            symbol_text(a, "0"),
+            symbol_text(a, "1"),
+            symbol_text(a, "->"),
+            symbol_text(a, "Halt"));
+        table(
+            symbol_text(a, "Inc"),
+            symbol_text(a, "1"),
+            symbol_text(a, "0"),
+            symbol_text(a, "->"),
+            symbol_text(a, "Inc"));
     }
 
-    Arena *a = &p->arena_assets;
-    arena_reset(a);
     task_vtable_rebuild(a);
-    TASK_INTRO_TAG = task_vtable_register(a, (Task_Funcs) {
+    p->TASK_INTRO_TAG = task_vtable_register(a, (Task_Funcs) {
         .update = (task_update_data_t)task_intro_update,
     });
-    TASK_MOVE_HEAD_TAG = task_vtable_register(a, (Task_Funcs) {
+    p->TASK_MOVE_HEAD_TAG = task_vtable_register(a, (Task_Funcs) {
         .update = (task_update_data_t)move_head_update,
     });
-    TASK_WRITE_HEAD_TAG = task_vtable_register(a, (Task_Funcs) {
+    p->TASK_WRITE_HEAD_TAG = task_vtable_register(a, (Task_Funcs) {
         .update = (task_update_data_t)write_head_update,
     });
-    TASK_WRITE_ALL_TAG = task_vtable_register(a, (Task_Funcs) {
+    p->TASK_WRITE_ALL_TAG = task_vtable_register(a, (Task_Funcs) {
         .update = (task_update_data_t)write_all_update,
     });
 }
@@ -349,6 +368,12 @@ static void unload_assets(void) {
         UnloadTexture(p->images[i]);
     }
     p->table.count = 0;
+}
+
+static Task task_outro(Arena *a, float duration) {
+    return task_group(a,
+        task_move_scalar(a, &p->scene_t, 0.0, duration),
+        task_move_scalar(a, &p->table_t, 0.0, duration));
 }
 
 void plug_reset(void)
@@ -367,11 +392,16 @@ void plug_reset(void)
 
     p->scene_t = 0;
     p->tape_y_offset = 0.0f;
+    p->table_t = 0;
 
     p->task = task_seq(a,
         task_intro(a, START_AT_CELL_INDEX),
         task_wait(a, 0.75),
+        task_move_scalar(a, &p->tape_y_offset, -250.0, 0.5),
+        task_wait(a, 0.75),
+        task_move_scalar(a, &p->table_t, 1.0, 0.5),
 
+        task_wait(a, 0.75),
         task_write_head(a, symbol_text(a, "1")),
         task_move_head(a, DIR_RIGHT),
         task_write_head(a, symbol_text(a, "2")),
@@ -396,7 +426,7 @@ void plug_reset(void)
         task_write_all(a, symbol_image(IMAGE_EGGPLANT)),
         task_write_all(a, symbol_text(a, "0")),
         task_wait(a, 0.5),
-        task_move_scalar(a, &p->scene_t, 0.0, INTRO_DURATION),
+        task_outro(a, INTRO_DURATION),
         task_wait(a, 0.5));
     p->finished = false;
 }
@@ -430,25 +460,24 @@ void plug_post_reload(void *state) {
     load_assets();
 }
 
-static void text_in_rec(Rectangle rec, const char *text, float t, Color color) {
-    Vector2 cell_size = { rec.width, rec.height };
-    float font_size = FONT_SIZE*t;
+static void text_in_rec(Rectangle rec, const char *text, float size, Color color) {
+    Vector2 rec_size = { rec.width, rec.height };
+    float font_size = size;
     Vector2 text_size = MeasureTextEx(p->font, text, font_size, 0);
     Vector2 position = {
         .x = rec.x,
         .y = rec.y
     };
-    position = Vector2Add(position, Vector2Scale(cell_size, 0.5));
+    position = Vector2Add(position, Vector2Scale(rec_size, 0.5));
     position = Vector2Subtract(position, Vector2Scale(text_size, 0.5));
-    DrawTextEx(p->font, text, position, font_size, 0, ColorAlpha(color, t));
+    DrawTextEx(p->font, text, position, font_size, 0, color);
 }
 
-static void image_in_rec(Rectangle rec, Texture2D image, float t, Color color) {
-    Vector2 cell_size = { rec.width, rec.height };
-    Vector2 image_size = { cell_size.x, cell_size.y };
-    image_size = Vector2Scale(image_size, t*0.52);
+static void image_in_rec(Rectangle rec, Texture2D image, float size, Color color) {
+    Vector2 rec_size = { rec.width, rec.height };
+    Vector2 image_size = { size, size };
     Vector2 position = { rec.x, rec.y };
-    position = Vector2Add(position, Vector2Scale(cell_size, 0.5));
+    position = Vector2Add(position, Vector2Scale(rec_size, 0.5));
     position = Vector2Subtract(position, Vector2Scale(image_size, 0.5));
 
     Rectangle source = { 0, 0, image.width, image.height };
@@ -456,31 +485,32 @@ static void image_in_rec(Rectangle rec, Texture2D image, float t, Color color) {
     DrawTexturePro(image, source, dest, Vector2Zero(), 0.0, color);
 }
 
-static void symbol_in_rec(Rectangle rec, Symbol symbol, float t, Color color) {
+static void symbol_in_rec(Rectangle rec, Symbol symbol, float size, float t, Color color) {
     switch (symbol.kind) {
         case SYMBOL_TEXT: {
-            text_in_rec(rec, symbol.text, t, color);
+            text_in_rec(rec, symbol.text, size*t, ColorAlpha(color, t));
         } break;
         case SYMBOL_IMAGE: {
-            image_in_rec(rec, p->images[symbol.image_index], t, WHITE);
+            image_in_rec(rec, p->images[symbol.image_index], size*t, ColorAlpha(WHITE, t));
         } break;
     }
 }
 
-static void interp_symbol_in_rec(Rectangle rec, Symbol from_symbol, Symbol to_symbol, float t, Color color) {
-    symbol_in_rec(rec, from_symbol, 1 - t, color);
-    symbol_in_rec(rec, to_symbol, t, color);
+static void interp_symbol_in_rec(Rectangle rec, Symbol from_symbol, Symbol to_symbol, float size, float t, Color color) {
+    symbol_in_rec(rec, from_symbol, size, 1 - t, color);
+    symbol_in_rec(rec, to_symbol, size, t, color);
 }
 
 void plug_update(Env env) {
     ClearBackground(BACKGROUND_COLOR);
 
+    const float header_font_size = FONT_SIZE*0.65f;
     const char *text = "Turing Machine";
-    Vector2 text_size = MeasureTextEx(p->font, text, FONT_SIZE, 0);
+    Vector2 text_size = MeasureTextEx(p->font, text, header_font_size, 0);
 
-    Vector2 position = {env.screen_width/2, env.screen_height/6};
+    Vector2 position = {env.screen_width/2, FONT_SIZE - header_font_size};
     position = Vector2Subtract(position, Vector2Scale(text_size, 0.5));
-    DrawTextEx(p->font, text, position, FONT_SIZE, 0, WHITE);
+    DrawTextEx(p->font, text, position, header_font_size, 0, WHITE);
     
     p->finished = task_update(p->task, env);
 
@@ -491,11 +521,11 @@ void plug_update(Env env) {
     };
     float t = ((float)p->head.index + p->head.offset);
     head_rec.x = CELL_WIDTH/2 - head_rec.width/2 + Lerp(-20.0, t, p->scene_t)*(CELL_WIDTH + CELL_PAD);
-    head_rec.y = CELL_HEIGHT/2 - head_rec.height/2 - p->tape_y_offset;
+    head_rec.y = CELL_HEIGHT/2 - head_rec.height/2;
     Camera2D camera = {
         .target = {
             .x = head_rec.x + head_rec.width/2,
-            .y = head_rec.y + head_rec.height/2,
+            .y = head_rec.y + head_rec.height/2 - p->tape_y_offset,
         },
         .zoom = Lerp(0.5, 1.0, p->scene_t),
         .offset = {
@@ -508,18 +538,39 @@ void plug_update(Env env) {
         for (size_t i = 0; i < p->tape.count; ++i) {
             Rectangle rec = {
                 .x = i*(CELL_WIDTH + CELL_PAD),
-                .y = -p->tape_y_offset,
+                .y = 0,
                 .width = CELL_WIDTH,
                 .height = CELL_HEIGHT,
             };
             DrawRectangleRec(rec, CELL_COLOR);
 
-            interp_symbol_in_rec(rec, p->tape.items[i].symbol_a, p->tape.items[i].symbol_b, p->tape.items[i].t, BACKGROUND_COLOR);
+            interp_symbol_in_rec(rec, p->tape.items[i].symbol_a, p->tape.items[i].symbol_b, FONT_SIZE, p->tape.items[i].t, BACKGROUND_COLOR);
         }
 
         DrawRectangleLinesEx(head_rec, head_thick, ColorAlpha(HEAD_COLOR, p->scene_t));
 
     EndMode2D();
+
+    {
+        float margin = 100.0;
+        float padding = CELL_PAD*0.5;
+        float w = 150.0f;
+        float h = 150.0f;
+        float x = margin;
+        float y = env.screen_height - h*p->table.count - margin;
+        for (size_t i = 0; i < p->table.count; ++i) {
+            for (size_t j = 0; j < COUNT_RULE_SYMBOLS; ++j) {
+                Rectangle rec = {
+                    .x = x + j*(w + padding),
+                    .y = y + i*(h + padding),
+                    .width = w,
+                    .height = h,
+                };
+                // DrawRectangleLinesEx(rec, 10, RED);
+                symbol_in_rec(rec, p->table.items[i].symbols[j], FONT_SIZE*0.75, p->table_t, CELL_COLOR);
+            }
+        }
+    }
 }
 
 bool plug_finished(void) {
