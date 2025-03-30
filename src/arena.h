@@ -26,6 +26,11 @@
 #include <stdint.h>
 #include <string.h>
 
+#ifndef ARENA_NOSTDIO
+#include <stdarg.h>
+#include <stdio.h>
+#endif // ARENA_NOSTDIO
+
 #ifndef ARENA_ASSERT
 #include <assert.h>
 #define ARENA_ASSERT assert
@@ -66,6 +71,9 @@ void *arena_alloc(Arena *a, size_t size_bytes);
 void *arena_realloc(Arena *a, void *oldptr, size_t oldsz, size_t newsz);
 char *arena_strdup(Arena *a, const char *cstr);
 void *arena_memdup(Arena *a, void *data, size_t size);
+#ifndef ARENA_NOSTDIO
+char *arena_sprintf(Arena *a, const char *format, ...);
+#endif // ARENA_NOSTDIO
 
 void arena_reset(Arena *a);
 void arena_free(Arena *a);
@@ -90,7 +98,6 @@ void arena_free(Arena *a);
     }                                                                                       \
     (da)->items[(da)->count++] = (item);                                                    \
 } while (0)
-
 
 #endif // ARENA_H_
 
@@ -252,6 +259,23 @@ void *arena_memdup(Arena *a, void *data, size_t size)
     return memcpy(arena_alloc(a, size), data, size);
 }
 
+#ifndef ARENA_NOSTDIO
+char *arena_sprintf(Arena *a, const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    int n = vsnprintf(NULL, 0, format, args);
+    va_end(args);
+
+    ARENA_ASSERT(n >= 0);
+    char *result = (char*)arena_alloc(a, n + 1);
+    va_start(args, format);
+    vsnprintf(result, n + 1, format, args);
+    va_end(args);
+
+    return result;
+}
+#endif // ARENA_NOSTDIO
+
 void arena_reset(Arena *a)
 {
     for (Region *r = a->begin; r != NULL; r = r->next) {
@@ -274,4 +298,3 @@ void arena_free(Arena *a)
 }
 
 #endif // ARENA_IMPLEMENTATION
-
