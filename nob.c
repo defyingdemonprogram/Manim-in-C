@@ -110,6 +110,7 @@ int main(int argc, char **argv) {
     if (!build_plug_c(force, &cmd, SRC_DIR"/tm.c", BUILD_DIR"libtm.so")) return 1;
     if (!build_plug_c(force, &cmd, SRC_DIR"/template.c", BUILD_DIR"libtemplate.so")) return 1;
     if (!build_plug_c(force, &cmd, SRC_DIR"/squares.c", BUILD_DIR"libsquares.so")) return 1;
+    if (!build_plug_c(force, &cmd, SRC_DIR"/bezier.c", BUILD_DIR"libbezier.so")) return 1;
     if (!build_plug_cxx(force, &cmd, SRC_DIR"/probe.cpp", BUILD_DIR"libprobe.so")) return 1;
     if (!build_panim(force, &cmd)) return 1;
 
